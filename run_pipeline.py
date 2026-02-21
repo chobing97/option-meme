@@ -49,11 +49,12 @@ def _symbol_list_keys(market: str) -> list[str]:
 # ── Collector ────────────────────────────────────────────
 
 
-def run_collector(markets: list[str], full: bool = False) -> None:
+def run_collector(markets: list[str], full: bool = False, symbols: list[str] | None = None) -> None:
     """Run data collection for specified markets.
 
     Default (incremental): fetch from last collected date to today.
     --full: fetch entire available history (~60 days).
+    --symbol: collect specific symbol(s) only.
     """
     from src.collector.bar_fetcher import BarFetcher, fetch_yfinance, load_symbol_list
     from src.collector.storage import get_symbol_date_range
@@ -63,6 +64,13 @@ def run_collector(markets: list[str], full: bool = False) -> None:
     for market in markets:
         for key in _symbol_list_keys(market):
             symbols_df = load_symbol_list(key)
+
+            if symbols:
+                symbols_df = symbols_df[symbols_df["ticker"].astype(str).isin(symbols)]
+                if symbols_df.empty:
+                    continue
+                symbols_df = symbols_df.reset_index(drop=True)
+
             total = len(symbols_df)
             logger.info(f"=== Collecting {key}: {total} symbols (full={full}) ===")
 
@@ -360,6 +368,11 @@ examples:
         action="store_true",
         help="Full re-collection instead of incremental (collector only)",
     )
+    parser.add_argument(
+        "--symbol",
+        nargs="+",
+        help="Specific symbol(s) to collect (collector only). e.g. --symbol 5930 660",
+    )
 
     return parser
 
@@ -376,7 +389,7 @@ def main() -> None:
 
     try:
         if stage in ("collector", "all"):
-            run_collector(markets, full=args.full)
+            run_collector(markets, full=args.full, symbols=args.symbol)
 
         if stage in ("labeler", "all"):
             run_labeler(markets)
