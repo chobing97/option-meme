@@ -152,7 +152,8 @@ def optimize_lgb(
         y_pred = model.predict(X_val)
         return average_precision_score(y_val, y_pred)
 
-    study = optuna.create_study(direction="maximize", seed=RANDOM_SEED)
+    sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(objective, n_trials=n_trials, timeout=timeout)
 
     logger.info(f"Optuna best PR-AUC: {study.best_value:.4f}")
