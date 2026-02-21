@@ -10,12 +10,17 @@ def market_selector(key: str = "market") -> str:
     return st.sidebar.radio("Market", ["kr", "us"], format_func=str.upper, key=key, horizontal=True)
 
 
-def symbol_selector(symbols: list[str], key: str = "symbol") -> str | None:
-    """Dropdown to pick a symbol."""
+def symbol_selector(
+    symbols: list[str],
+    key: str = "symbol",
+    name_map: dict[str, str] | None = None,
+) -> str | None:
+    """Dropdown to pick a symbol. Shows 'symbol(name)' when name_map is provided."""
     if not symbols:
         st.sidebar.warning("No symbols available")
         return None
-    return st.sidebar.selectbox("Symbol", symbols, key=key)
+    fmt = (lambda s: f"{s}({name_map[s]})" if s in name_map else s) if name_map else None
+    return st.sidebar.selectbox("Symbol", symbols, key=key, format_func=fmt)
 
 
 def date_range_selector(

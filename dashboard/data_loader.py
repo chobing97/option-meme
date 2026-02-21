@@ -18,6 +18,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ── Stock info ───────────────────────────────────────────
+
+
+@st.cache_data(show_spinner=False)
+def get_stock_name_map(market: str) -> dict[str, str]:
+    """Return {symbol: name} mapping from stock_info.db."""
+    from src.collector.stock_info_db import StockInfoDB
+
+    with StockInfoDB() as db:
+        rows = db.get_all(market)
+    return {r["symbol"]: r["name"] for r in rows if r.get("name")}
+
+
 # ── Path helpers ──────────────────────────────────────────
 
 

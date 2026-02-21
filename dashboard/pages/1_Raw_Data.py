@@ -12,7 +12,7 @@ import streamlit as st
 
 from dashboard.components.charts import make_candlestick
 from dashboard.components.filters import date_range_selector, market_selector, symbol_selector
-from dashboard.data_loader import get_raw_symbols, load_raw_bars
+from dashboard.data_loader import get_raw_symbols, get_stock_name_map, load_raw_bars
 
 st.set_page_config(page_title="Raw Data", layout="wide")
 st.title("Phase 0: Raw OHLCV Data")
@@ -26,7 +26,8 @@ if not symbols:
     st.warning(f"No raw data for **{market.upper()}**. Run: `python run_pipeline.py collector --market {market}`")
     st.stop()
 
-symbol = symbol_selector(symbols, key="raw_symbol")
+name_map = get_stock_name_map(market)
+symbol = symbol_selector(symbols, key="raw_symbol", name_map=name_map)
 if symbol is None:
     st.stop()
 
@@ -50,14 +51,15 @@ if df.empty:
 # ── Summary metrics ───────────────────────────────────────
 
 cols = st.columns(4)
-cols[0].metric("Symbol", symbol)
+stock_label = f"{symbol}({name_map[symbol]})" if symbol in name_map else symbol
+cols[0].metric("Symbol", stock_label)
 cols[1].metric("Bars", f"{len(df):,}")
 cols[2].metric("From", str(df["datetime"].min())[:10])
 cols[3].metric("To", str(df["datetime"].max())[:10])
 
 # ── Candlestick chart ─────────────────────────────────────
 
-st.plotly_chart(make_candlestick(df, f"{symbol} ({market.upper()})"), use_container_width=True)
+st.plotly_chart(make_candlestick(df, f"{stock_label} ({market.upper()})"), use_container_width=True)
 
 # ── Data table ────────────────────────────────────────────
 

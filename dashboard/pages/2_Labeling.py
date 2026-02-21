@@ -11,7 +11,7 @@ import streamlit as st
 
 from dashboard.components.charts import make_editable_candlestick, make_label_distribution
 from dashboard.components.filters import date_range_selector, market_selector, symbol_selector
-from dashboard.data_loader import load_labeled, save_label_edit
+from dashboard.data_loader import get_stock_name_map, load_labeled, save_label_edit
 
 st.set_page_config(page_title="Labels", layout="wide")
 st.title("Phase 1: Peak/Trough Labels")
@@ -26,7 +26,8 @@ if df.empty:
     st.stop()
 
 symbols = sorted(df["symbol"].unique().tolist())
-symbol = symbol_selector(symbols, key="label_symbol")
+name_map = get_stock_name_map(market)
+symbol = symbol_selector(symbols, key="label_symbol", name_map=name_map)
 if symbol is None:
     st.stop()
 
@@ -70,7 +71,8 @@ else:
     day_df = sym_df
 
 if not day_df.empty:
-    fig = make_editable_candlestick(day_df, f"{symbol} — {selected_date if dates else ''}")
+    stock_label = f"{symbol}({name_map[symbol]})" if symbol in name_map else symbol
+    fig = make_editable_candlestick(day_df, f"{stock_label} — {selected_date if dates else ''}")
     event = st.plotly_chart(
         fig,
         use_container_width=True,
