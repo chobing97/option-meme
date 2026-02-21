@@ -42,9 +42,7 @@ def compute_volume_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── OBV (On-Balance Volume, session-relative) ──────
     price_dir = np.sign(result["close"].diff().fillna(0))
     signed_vol = vol * price_dir
-    result["vf_obv"] = result.groupby("date").apply(
-        lambda g: signed_vol.loc[g.index].cumsum()
-    ).reset_index(level=0, drop=True)
+    result["vf_obv"] = signed_vol.groupby(result["date"]).cumsum()
 
     # Normalize OBV by total day volume
     result["vf_obv_norm"] = np.where(
@@ -52,9 +50,8 @@ def compute_volume_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # ── VWAP deviation ─────────────────────────────────
-    cum_pv = result.groupby("date").apply(
-        lambda g: (g["close"] * g["volume"]).cumsum()
-    ).reset_index(level=0, drop=True)
+    pv = result["close"] * result["volume"].astype(float)
+    cum_pv = pv.groupby(result["date"]).cumsum()
     vwap = np.where(cum_vol > 0, cum_pv / cum_vol, result["close"])
     session_open = result.groupby("date")["open"].transform("first")
     result["vf_vwap_dev"] = (result["close"] - vwap) / session_open
