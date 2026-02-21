@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "Detect price turning points (peak/trough) in early regular trading sessions"
 requires-python = ">=3.10"
 dependencies = [
-    # Data collection
-    "tvDatafeed>=2.1.0",
+    # Data collection (tvDatafeed: install separately via pip install --upgrade --no-cache-dir git+https://github.com/StreamAlpha/tvdatafeed.git)
     "yfinance>=0.2.0",
     "pykrx>=1.0.0",
     # Data processing
@@ -33,11 +32,18 @@ dev = [
     "ipykernel",
     "black",
     "ruff",
+    "pytest>=7.4",
+    "pytest-mock>=3.12",
 ]
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
