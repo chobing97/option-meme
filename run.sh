@@ -13,5 +13,17 @@ if [ ! -d "${VENV_DIR}" ]; then
     exit 1
 fi
 
+# Log directory: log/yyyy-MM-dd/
+LOG_DATE="$(date +%Y-%m-%d)"
+LOG_DIR="${SCRIPT_DIR}/log/${LOG_DATE}"
+mkdir -p "${LOG_DIR}"
+
+# Log file: run.sh-{stage}-HHMMSS.log
+STAGE="${1:-unknown}"
+LOG_TIME="$(date +%H%M%S)"
+LOG_FILE="${LOG_DIR}/run.sh-${STAGE}-${LOG_TIME}.log"
+
 source "${VENV_DIR}/bin/activate"
-python "${SCRIPT_DIR}/run_pipeline.py" "$@"
+
+echo "Logging to: ${LOG_FILE}"
+python "${SCRIPT_DIR}/run_pipeline.py" "$@" 2>&1 | tee "${LOG_FILE}"
