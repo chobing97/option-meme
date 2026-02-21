@@ -23,6 +23,7 @@ from tqdm import tqdm
 
 from config.settings import SYMBOLS_DIR
 from src.collector.collection_tracker import CollectionTracker
+from src.collector.stock_info_db import StockInfoDB
 from src.collector.storage import save_bars, validate_bars
 from src.collector.tv_client import TVClient
 
@@ -257,6 +258,7 @@ class BarFetcher:
         self._tv_username = tv_username
         self._tv_password = tv_password
         self._tracker = CollectionTracker()
+        self._stock_info_db = StockInfoDB()
 
     @property
     def tv_client(self) -> TVClient:
@@ -318,6 +320,12 @@ class BarFetcher:
         else:
             logger.warning(f"  yfinance: {ticker} 데이터 없음")
 
+        # ── Stock info 수집 (yfinance .info) ──────────
+        try:
+            self._save_stock_info(ticker, market, _yf_ticker(ticker, market))
+        except Exception as e:
+            logger.debug(f"stock info 수집 실패: {e}")
+
         # ── Phase 2: tvDatafeed overlay ────────────────
         logger.info(f"[2/2] tvDatafeed 덮어쓰기: {ticker} ({market})")
         try:
@@ -345,6 +353,40 @@ class BarFetcher:
 
         # 최종 저장된 데이터 중 더 최신 것 반환
         return tv_df if (tv_df is not None and not tv_df.empty) else yf_df
+
+    # ── Private: stock info 저장 ────────────────────────
+
+    def _save_stock_info(
+        self,
+        ticker: str,
+        market: str,
+        yf_ticker_str: str,
+    ) -> None:
+        """Fetch stock info from yfinance .info and save to StockInfoDB."""
+        import yfinance as yf
+
+        info = yf.Ticker(yf_ticker_str).info
+        name = info.get("shortName", "") or info.get("longName", "")
+
+        # KR 종목은 yfinance name이 비어있는 경우가 많으므로 CSV fallback
+        if not name and market == "kr":
+            try:
+                sym_df = load_symbol_list("kr")
+                match = sym_df[sym_df["ticker"].astype(str) == ticker]
+                if not match.empty:
+                    name = str(match.iloc[0].get("name", ""))
+            except Exception:
+                pass
+
+        self._stock_info_db.upsert(ticker, market, {
+            "name": name,
+            "exchange": info.get("exchange", ""),
+            "sector": info.get("sector", ""),
+            "industry": info.get("industry", ""),
+            "currency": info.get("currency", ""),
+            "market_cap": info.get("marketCap", 0),
+        })
+        logger.debug(f"stock info 저장: {ticker} ({market})")
 
     # ── Private: 배치 수집 ─────────────────────────────
 
