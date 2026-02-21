@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from config.settings import (
     LABELED_DIR,
+    LABELED_MANUAL_DIR,
     PEAK_DISTANCE,
     PEAK_PROMINENCE_PCT,
     PEAK_WIDTH,
@@ -142,6 +143,33 @@ def label_all_symbols(
         save_labeled(combined, market)
 
     return combined
+
+
+def apply_manual_overrides(df: pd.DataFrame, market: str) -> pd.DataFrame:
+    """수작업 레이블로 자동 레이블을 오버라이드."""
+    manual_path = LABELED_MANUAL_DIR / f"{market}_manual.parquet"
+    if not manual_path.exists():
+        return df
+
+    manual = pd.read_parquet(manual_path)
+    if manual.empty:
+        return df
+
+    merged = df.merge(
+        manual[["symbol", "datetime", "label"]],
+        on=["symbol", "datetime"],
+        how="left",
+        suffixes=("", "_manual"),
+    )
+    has_override = merged["label_manual"].notna()
+    merged.loc[has_override, "label"] = merged.loc[has_override, "label_manual"].astype(int)
+    merged.drop(columns=["label_manual"], inplace=True)
+
+    n_overrides = has_override.sum()
+    if n_overrides > 0:
+        logger.info(f"수작업 레이블 {n_overrides}건 오버라이드 적용 ({market})")
+
+    return merged
 
 
 def save_labeled(df: pd.DataFrame, market: str) -> Path:

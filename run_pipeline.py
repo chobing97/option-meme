@@ -140,7 +140,12 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
 
 def run_labeler(markets: list[str]) -> None:
     """Run labeling for all symbols in specified markets."""
-    from src.labeler.label_generator import label_all_symbols, label_statistics
+    from src.labeler.label_generator import (
+        apply_manual_overrides,
+        label_all_symbols,
+        label_statistics,
+        save_labeled,
+    )
 
     for market in markets:
         logger.info(f"=== Labeling {market} ===")
@@ -149,6 +154,10 @@ def run_labeler(markets: list[str]) -> None:
         if labeled_df.empty:
             logger.warning(f"No data to label for {market}")
             continue
+
+        # 수작업 레이블 오버라이드 적용 후 재저장
+        labeled_df = apply_manual_overrides(labeled_df, market)
+        save_labeled(labeled_df, market)
 
         stats = label_statistics(labeled_df)
         logger.info(f"Label statistics for {market}:")
