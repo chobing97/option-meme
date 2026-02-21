@@ -86,10 +86,13 @@ def build_lookback_features(
 
     result = df.copy()
 
-    # Create lagged features
-    for lag in range(1, lookback + 1):
-        for col in feature_cols:
-            result[f"{col}_lag{lag}"] = result[col].shift(lag)
+    # Create lagged features (concat at once to avoid fragmentation)
+    lag_cols = {
+        f"{col}_lag{lag}": df[col].shift(lag)
+        for lag in range(1, lookback + 1)
+        for col in feature_cols
+    }
+    result = pd.concat([result, pd.DataFrame(lag_cols, index=df.index)], axis=1)
 
     # Drop rows without full lookback history
     # Within each day, the first `lookback` bars won't have full history

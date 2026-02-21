@@ -85,3 +85,21 @@ LSTM_BATCH_SIZE = 256
 LSTM_EPOCHS = 50
 
 RANDOM_SEED = 42
+
+# ── Trading ──────────────────────────────────────────
+TRADE_PROFIT_TARGET_PCT = 0.10        # +10% -> take profit
+TRADE_STOP_LOSS_PCT = -0.05           # -5% -> stop loss
+TRADE_MIN_EXPIRY_DAYS = 7             # minimum days to option expiry
+TRADE_POLL_INTERVAL_SEC = 60.0        # live polling interval (unused in mock)
+TRADE_MOCK_VOLATILITY = 0.25          # annualized vol for BS pricing
+TRADE_MOCK_RISK_FREE = 0.035          # risk-free rate for BS pricing
+TRADE_MOCK_SLIPPAGE_PCT = 0.005       # 0.5% slippage on fills
+TRADE_MOCK_CAPITAL = 10_000_000       # starting capital (KRW)
+
+# Market close times (for force close calculation)
+KR_MARKET_CLOSE = "15:30"             # KR 장마감
+US_MARKET_CLOSE = "16:00"             # US 장마감
+TRADE_FORCE_CLOSE_MINUTES = 120       # 장마감 N분 전 강제청산
+
+# Trade DB
+TRADE_DB_DIR = PROJECT_ROOT / "data_meme"

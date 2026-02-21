@@ -1,7 +1,7 @@
 """SQLite-based collection progress tracker for resumable data collection."""
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -78,7 +78,7 @@ class CollectionTracker:
         error_message: Optional[str] = None,
     ) -> None:
         """Insert or update collection record."""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur = self._conn.cursor()
         cur.execute(
             """
@@ -106,7 +106,7 @@ class CollectionTracker:
     def mark_complete(self, symbol: str, exchange: str, source: str) -> None:
         """Mark a symbol as fully collected."""
         cur = self._conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur.execute(
             """UPDATE collection_log SET status='complete', updated_at=?
                WHERE symbol=? AND exchange=? AND source=?""",
@@ -119,7 +119,7 @@ class CollectionTracker:
     ) -> None:
         """Mark a symbol as errored."""
         cur = self._conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur.execute(
             """UPDATE collection_log SET status='error', error_message=?, updated_at=?
                WHERE symbol=? AND exchange=? AND source=?""",

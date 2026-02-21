@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: collector → labeler → features → model.
+"""Pipeline orchestrator: collector → labeler → features → model → predict → trade.
 
 Usage:
     python run_pipeline.py all                    # Full pipeline
@@ -6,11 +6,15 @@ Usage:
     python run_pipeline.py labeler                # Labeling only
     python run_pipeline.py features               # Feature engineering only
     python run_pipeline.py model                  # Model training only
+    python run_pipeline.py predict                # Inference on latest data
+    python run_pipeline.py trade                  # Mock trading simulation
 
 Options:
     --market kr|us|all                            # Market selection (default: all)
     --model gbm|lstm|all                          # Model type (default: all)
     --full                                        # Full re-collection (instead of incremental)
+    --threshold 0.5                               # Prediction threshold (predict/trade)
+    --date 2026-02-20                             # Target date (predict/trade)
 """
 
 import argparse
@@ -314,6 +318,80 @@ def _run_full_evaluation(split, feature_cols, market, models_dir):
     logger.info(json.dumps(eval_results, indent=2, default=str))
 
 
+# ── Predict ──────────────────────────────────────────────
+
+
+def run_predict(
+    markets: list[str],
+    symbols: list[str],
+    model_type: str = "gbm",
+    threshold: float = 0.5,
+    date: str | None = None,
+) -> None:
+    """Run inference for specified symbols."""
+    from src.inference.predict import predict_symbol
+
+    for market in markets:
+        for symbol in symbols:
+            logger.info(f"=== Predicting {market}/{symbol} ===")
+            try:
+                result = predict_symbol(
+                    market=market,
+                    symbol=symbol,
+                    model_type=model_type,
+                    threshold=threshold,
+                    date=date,
+                )
+                logger.info(
+                    f"Done: {result['date']}, "
+                    f"{sum(p['n_peaks'] for p in result['predictions'])} peaks, "
+                    f"{sum(p['n_troughs'] for p in result['predictions'])} troughs"
+                )
+            except (FileNotFoundError, ValueError) as e:
+                logger.error(f"Predict failed for {market}/{symbol}: {e}")
+
+
+# ── Trade ────────────────────────────────────────────────
+
+
+def run_trade(
+    market: str,
+    symbols: list[str],
+    model_type: str = "gbm",
+    threshold: float = 0.5,
+    date: str | None = None,
+    quantity: int = 1,
+) -> None:
+    """Run mock trading simulation for one or more symbols."""
+    from src.trading.broker.mock_broker import MockBroker
+    from src.trading.datafeed.mock_feed import MockDataFeed
+    from src.trading.engine import TradingEngine
+    from src.trading.notifier.console import ConsoleNotifier
+    from src.trading.signal_detector import SignalDetector
+    from src.trading.trade_db import TradeDB
+
+    feeds = {
+        symbol: MockDataFeed(market=market, symbol=symbol, date=date)
+        for symbol in symbols
+    }
+    broker = MockBroker()
+    detector = SignalDetector(market=market, model_type=model_type, threshold=threshold)
+    notifiers = [ConsoleNotifier()]
+    trade_db = TradeDB()
+
+    engine = TradingEngine(
+        feeds=feeds,
+        broker=broker,
+        detector=detector,
+        symbols=symbols,
+        quantity=quantity,
+        notifiers=notifiers,
+        trade_db=trade_db,
+    )
+    engine.run()
+    trade_db.close()
+
+
 # ── CLI ──────────────────────────────────────────────────
 
 
@@ -322,6 +400,8 @@ STAGES = {
     "labeler": "Peak/trough labeling",
     "features": "Feature engineering",
     "model": "Model training & evaluation",
+    "predict": "Inference on latest data",
+    "trade": "Mock trading simulation",
     "all": "Full pipeline (collector → labeler → features → model)",
 }
 
@@ -340,6 +420,13 @@ examples:
   ./run.sh features                 Feature engineering (all markets)
   ./run.sh model --model gbm       LightGBM training only
   ./run.sh all --market kr          KR full pipeline
+  ./run.sh predict --market kr --symbol 5930 --model gbm
+  ./run.sh predict --market us --symbol AAPL --model all --threshold 0.3
+  ./run.sh predict --market kr --symbol 5930 --date 2026-02-20
+  ./run.sh trade --market kr --symbol 5930 --model gbm
+  ./run.sh trade --market kr --symbol 5930 660 --model gbm
+  ./run.sh trade --market kr --symbol 5930 --model gbm --quantity 2
+  ./run.sh trade --market kr --symbol 5930 --date 2026-02-19
 """,
     )
 
@@ -371,7 +458,25 @@ examples:
     parser.add_argument(
         "--symbol",
         nargs="+",
-        help="Specific symbol(s) to collect (collector only). e.g. --symbol 5930 660",
+        help="Specific symbol(s). Required for predict. e.g. --symbol 5930 660",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Probability threshold for signal detection (predict only, default: 0.5)",
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Target date YYYY-MM-DD (predict/trade, default: latest trading day)",
+    )
+    parser.add_argument(
+        "--quantity",
+        type=int,
+        default=1,
+        help="Number of option contracts per trade (trade only, default: 1)",
     )
 
     return parser
@@ -399,6 +504,31 @@ def main() -> None:
 
         if stage in ("model", "all"):
             run_model(markets, model_type=args.model_type)
+
+        if stage == "predict":
+            if not args.symbol:
+                parser.error("predict stage requires --symbol")
+            run_predict(
+                markets,
+                symbols=args.symbol,
+                model_type=args.model_type,
+                threshold=args.threshold,
+                date=args.date,
+            )
+
+        if stage == "trade":
+            if not args.symbol:
+                parser.error("trade stage requires --symbol")
+            if args.market == "all":
+                parser.error("trade stage requires a specific --market (kr or us)")
+            run_trade(
+                market=args.market,
+                symbols=args.symbol,
+                model_type=args.model_type,
+                threshold=args.threshold,
+                date=args.date,
+                quantity=args.quantity,
+            )
 
     except KeyboardInterrupt:
         logger.warning("Pipeline interrupted by user")
