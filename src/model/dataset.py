@@ -55,12 +55,28 @@ def time_based_split(
     df = df.sort_values("datetime").reset_index(drop=True)
 
     max_date = df["datetime"].max()
+    min_date = df["datetime"].min()
     test_start = max_date - pd.DateOffset(months=test_months)
     val_start = test_start - pd.DateOffset(months=val_months)
 
     train = df[df["datetime"] < val_start]
     val = df[(df["datetime"] >= val_start) & (df["datetime"] < test_start)]
     test = df[df["datetime"] >= test_start]
+
+    # Fallback: 데이터가 부족하면 비율 기반 split (60/20/20)
+    if len(train) == 0 or len(val) == 0:
+        data_span = (max_date - min_date).days
+        logger.warning(
+            f"Insufficient data for time-based split ({data_span} days). "
+            f"Falling back to ratio-based split (60/20/20)."
+        )
+        n = len(df)
+        train_end = int(n * 0.6)
+        val_end = int(n * 0.8)
+
+        train = df.iloc[:train_end]
+        val = df.iloc[train_end:val_end]
+        test = df.iloc[val_end:]
 
     result = SplitResult(
         train=train,
