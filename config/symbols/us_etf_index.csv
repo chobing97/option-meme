@@ -1,0 +1,23 @@
+ticker,name,tv_symbol,exchange,type
+SPY,SPDR S&P 500 ETF,AMEX:SPY,AMEX,etf
+QQQ,Invesco QQQ Trust,NASDAQ:QQQ,NASDAQ,etf
+IWM,iShares Russell 2000,AMEX:IWM,AMEX,etf
+DIA,SPDR Dow Jones ETF,AMEX:DIA,AMEX,etf
+EEM,iShares MSCI Emerging Markets,AMEX:EEM,AMEX,etf
+XLF,Financial Select SPDR,AMEX:XLF,AMEX,etf
+XLE,Energy Select SPDR,AMEX:XLE,AMEX,etf
+XLK,Technology Select SPDR,AMEX:XLK,AMEX,etf
+XLV,Health Care Select SPDR,AMEX:XLV,AMEX,etf
+GLD,SPDR Gold Shares,AMEX:GLD,AMEX,etf
+SLV,iShares Silver Trust,AMEX:SLV,AMEX,etf
+TLT,iShares 20+ Year Treasury,NASDAQ:TLT,NASDAQ,etf
+HYG,iShares High Yield Corporate,AMEX:HYG,AMEX,etf
+VXX,iPath Series B S&P 500 VIX,AMEX:VXX,AMEX,etf
+ARKK,ARK Innovation ETF,AMEX:ARKK,AMEX,etf
+SOXL,Direxion Semiconductor Bull 3X,AMEX:SOXL,AMEX,etf
+TQQQ,ProShares UltraPro QQQ,NASDAQ:TQQQ,NASDAQ,etf
+SQQQ,ProShares UltraPro Short QQQ,NASDAQ:SQQQ,NASDAQ,etf
+ES1!,E-mini S&P 500 Futures,CME_MINI:ES1!,CME_MINI,futures
+NQ1!,E-mini NASDAQ 100 Futures,CME_MINI:NQ1!,CME_MINI,futures
+YM1!,E-mini Dow Futures,CBOT_MINI:YM1!,CBOT_MINI,futures
+RTY1!,E-mini Russell 2000 Futures,CME_MINI:RTY1!,CME_MINI,futures
