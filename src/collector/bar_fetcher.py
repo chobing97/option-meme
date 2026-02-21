@@ -60,8 +60,9 @@ def _yf_ticker(ticker: str, market: str) -> str:
     """
     if market == "us":
         return ticker
-    # KR: 6자리 숫자 코드
-    return f"{ticker}.KS"
+    # KR: 6자리 zero-padding (예: 5930 → 005930.KS)
+    padded = ticker.zfill(6)
+    return f"{padded}.KS"
 
 
 def fetch_yfinance(
@@ -133,7 +134,7 @@ def fetch_yfinance(
 
     # KR KOSPI 실패 시 KOSDAQ(.KQ) fallback
     if not all_dfs and market == "kr":
-        yf_ticker_kq = f"{ticker}.KQ"
+        yf_ticker_kq = f"{ticker.zfill(6)}.KQ"
         logger.info(f"KOSPI failed for {ticker}, trying KOSDAQ ({yf_ticker_kq})")
         current_start = start_dt
         while current_start < end_dt:
