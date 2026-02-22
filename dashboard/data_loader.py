@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PROCESSED_DIR, RAW_DIR
+from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_DIR
 
 import logging
 
@@ -159,6 +159,18 @@ def get_labeled_summary(market: str) -> dict:
         "label_counts": df["label"].value_counts().to_dict(),
         "date_range": (str(df["datetime"].min())[:10], str(df["datetime"].max())[:10]),
     }
+
+
+# ── Prediction data ───────────────────────────────────────
+
+
+@st.cache_data(show_spinner="Loading predictions...")
+def load_predicted(market: str) -> pd.DataFrame:
+    """Load predicted labels from PREDICTIONS_DIR."""
+    path = PREDICTIONS_DIR / f"{market}_predicted.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
 
 
 # ── Featured data ─────────────────────────────────────────

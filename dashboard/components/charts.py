@@ -130,6 +130,90 @@ def make_editable_candlestick(df: pd.DataFrame, title: str = "Labels (click to e
     return fig
 
 
+def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") -> go.Figure:
+    """Candlestick with peak/trough markers and probability subplot."""
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.55, 0.25, 0.20],
+    )
+
+    # Row 1: Candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=df["datetime"],
+            open=df["open"], high=df["high"],
+            low=df["low"], close=df["close"],
+            name="OHLC",
+        ),
+        row=1, col=1,
+    )
+
+    peaks = df[df["label"] == 1]
+    troughs = df[df["label"] == 2]
+    if not peaks.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=peaks["datetime"], y=peaks["high"] * 1.002,
+                mode="markers",
+                marker=dict(symbol="triangle-down", size=10, color="#ef5350"),
+                name="Peak",
+            ),
+            row=1, col=1,
+        )
+    if not troughs.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=troughs["datetime"], y=troughs["low"] * 0.998,
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=10, color="#26a69a"),
+                name="Trough",
+            ),
+            row=1, col=1,
+        )
+
+    # Row 2: Volume
+    colors = ["#ef5350" if c < o else "#26a69a" for c, o in zip(df["close"], df["open"])]
+    fig.add_trace(
+        go.Bar(x=df["datetime"], y=df["volume"], marker_color=colors, name="Volume", opacity=0.6),
+        row=2, col=1,
+    )
+
+    # Row 3: Probabilities
+    if "peak_prob" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["datetime"], y=df["peak_prob"],
+                mode="lines", name="Peak prob",
+                line=dict(color="#ef5350", width=1.5),
+            ),
+            row=3, col=1,
+        )
+    if "trough_prob" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df["datetime"], y=df["trough_prob"],
+                mode="lines", name="Trough prob",
+                line=dict(color="#26a69a", width=1.5),
+            ),
+            row=3, col=1,
+        )
+    # Threshold line
+    fig.add_hline(y=0.5, line_dash="dash", line_color="#bdbdbd", row=3, col=1)
+
+    fig.update_layout(
+        title=title,
+        xaxis_rangeslider_visible=False,
+        height=650,
+        margin=dict(l=40, r=20, t=40, b=20),
+        showlegend=True,
+    )
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    fig.update_yaxes(title_text="Prob", row=3, col=1)
+    return fig
+
+
 def make_label_distribution(label_counts: dict) -> go.Figure:
     """Pie + bar chart for label distribution."""
     label_map = {0: "Neither", 1: "Peak", 2: "Trough"}
