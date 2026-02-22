@@ -9,7 +9,101 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from config.settings import DATA_DIR, LOOKBACK_WINDOW
+from config.settings import DATA_DIR, LOOKBACK_WINDOW, PREDICTIONS_DIR, PROCESSED_DIR
+
+
+def predict_all(
+    market: str,
+    model_type: str = "gbm",
+    threshold: float = 0.5,
+) -> pd.DataFrame:
+    """Batch predict all symbols/dates from featured parquet.
+
+    Loads the pre-computed featured data, runs model prediction on all rows
+    at once, and saves results in labeled parquet format with probabilities.
+
+    Args:
+        market: 'kr' or 'us'
+        model_type: 'gbm' (only gbm supported for batch)
+        threshold: Probability threshold for peak/trough classification
+
+    Returns:
+        DataFrame with predictions in labeled format (includes peak_prob, trough_prob).
+    """
+    from src.features.feature_pipeline import get_all_feature_columns
+    from src.model.train_gbm import load_model
+
+    # 1. Load featured data
+    featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
+    if not featured_path.exists():
+        raise FileNotFoundError(
+            f"Featured data not found: {featured_path}\n"
+            f"Run features first: ./run.sh features --market {market}"
+        )
+
+    df = pd.read_parquet(featured_path)
+    logger.info(f"Loaded {len(df)} rows from {featured_path}")
+
+    # 2. Get feature columns (same ordering as training)
+    feature_cols = get_all_feature_columns(df)
+    if not feature_cols:
+        raise ValueError("No feature columns found in featured data")
+    logger.info(f"Using {len(feature_cols)} feature columns")
+
+    # 3. Prepare feature matrix
+    X = df[feature_cols].values.astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 4. Load models and predict
+    models_dir = DATA_DIR / "models"
+    peak_path = models_dir / f"lgb_{market}_peak.txt"
+    trough_path = models_dir / f"lgb_{market}_trough.txt"
+
+    if not peak_path.exists() or not trough_path.exists():
+        raise FileNotFoundError(
+            f"LightGBM models not found at {models_dir}\n"
+            f"Train first: ./run.sh model --market {market} --model gbm"
+        )
+
+    peak_model = load_model(peak_path)
+    trough_model = load_model(trough_path)
+
+    peak_proba = peak_model.predict(X)
+    trough_proba = trough_model.predict(X)
+    logger.info("Prediction complete")
+
+    # 5. Vectorized label assignment
+    peak_proba = np.asarray(peak_proba)
+    trough_proba = np.asarray(trough_proba)
+
+    labels = np.zeros(len(df), dtype=np.int8)
+    labels[(peak_proba >= threshold) & (peak_proba > trough_proba)] = 1
+    labels[(trough_proba >= threshold) & (trough_proba > peak_proba)] = 2
+
+    # 6. Build output DataFrame in labeled format
+    output_cols = ["datetime", "open", "high", "low", "close", "volume",
+                   "date", "minutes_from_open", "symbol", "market"]
+    # Only keep columns that exist in df
+    output_cols = [c for c in output_cols if c in df.columns]
+
+    result = df[output_cols].copy()
+    result["label"] = labels
+    result["peak_prob"] = np.round(peak_proba, 4).astype(np.float32)
+    result["trough_prob"] = np.round(trough_proba, 4).astype(np.float32)
+
+    # 7. Save
+    PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = PREDICTIONS_DIR / f"{market}_predicted.parquet"
+    result.to_parquet(output_path, index=False, compression="snappy")
+
+    n_peaks = int((labels == 1).sum())
+    n_troughs = int((labels == 2).sum())
+    logger.info(
+        f"Saved {len(result)} rows to {output_path} "
+        f"(peaks={n_peaks}, troughs={n_troughs}, neither={len(result) - n_peaks - n_troughs})"
+    )
+
+    return result
 
 
 def predict_symbol(

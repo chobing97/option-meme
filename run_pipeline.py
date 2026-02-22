@@ -7,6 +7,7 @@ Usage:
     python run_pipeline.py features               # Feature engineering only
     python run_pipeline.py model                  # Model training only
     python run_pipeline.py predict                # Inference on latest data
+    python run_pipeline.py batch_predict          # Batch prediction (all symbols)
     python run_pipeline.py trade                  # Mock trading simulation
 
 Options:
@@ -26,7 +27,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from config.settings import DATA_DIR, LABELED_DIR, PROCESSED_DIR
+from config.settings import DATA_DIR, LABELED_DIR, PREDICTIONS_DIR, PROCESSED_DIR
 
 
 # ── Market helpers ───────────────────────────────────────
@@ -327,6 +328,35 @@ def _run_full_evaluation(split, feature_cols, market, models_dir):
     logger.info(json.dumps(eval_results, indent=2, default=str))
 
 
+# ── Batch Predict ────────────────────────────────────────
+
+
+def run_batch_predict(
+    markets: list[str],
+    model_type: str = "gbm",
+    threshold: float = 0.5,
+) -> None:
+    """Run batch prediction for all symbols/dates in featured data."""
+    from src.inference.predict import predict_all
+
+    for market in markets:
+        logger.info(f"=== Batch predicting {market} ===")
+        try:
+            result = predict_all(
+                market=market,
+                model_type=model_type,
+                threshold=threshold,
+            )
+            n_peaks = int((result["label"] == 1).sum())
+            n_troughs = int((result["label"] == 2).sum())
+            logger.info(
+                f"Done {market}: {len(result)} rows, "
+                f"peaks={n_peaks}, troughs={n_troughs}"
+            )
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"Batch predict failed for {market}: {e}")
+
+
 # ── Predict ──────────────────────────────────────────────
 
 
@@ -410,6 +440,7 @@ STAGES = {
     "features": "Feature engineering",
     "model": "Model training & evaluation",
     "predict": "Inference on latest data",
+    "batch_predict": "Batch prediction (all symbols → labeled parquet)",
     "trade": "Mock trading simulation",
     "all": "Full pipeline (collector → labeler → features → model)",
 }
@@ -436,6 +467,7 @@ examples:
   ./run.sh trade --market kr --symbol 5930 660 --model gbm
   ./run.sh trade --market kr --symbol 5930 --model gbm --quantity 2
   ./run.sh trade --market kr --symbol 5930 --date 2026-02-19
+  ./run.sh batch_predict --market all --model gbm --threshold 0.3
 """,
     )
 
@@ -513,6 +545,13 @@ def main() -> None:
 
         if stage in ("model", "all"):
             run_model(markets, model_type=args.model_type)
+
+        if stage == "batch_predict":
+            run_batch_predict(
+                markets,
+                model_type=args.model_type,
+                threshold=args.threshold,
+            )
 
         if stage == "predict":
             if not args.symbol:
