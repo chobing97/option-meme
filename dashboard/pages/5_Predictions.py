@@ -15,7 +15,7 @@ from dashboard.components.charts import (
     make_label_distribution,
 )
 from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
-from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted
+from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted, load_split_dates
 
 st.set_page_config(page_title="Predictions", layout="wide")
 st.title("Phase 5: Predictions")
@@ -79,6 +79,14 @@ if dates:
 else:
     selected_date = ""
     day_pred = sym_pred
+
+# Show which split the selected date belongs to
+split_dates = load_split_dates(market)
+date_str = str(selected_date) if selected_date else ""
+split_name = next((s for s, ds in split_dates.items() if date_str in ds), None)
+if split_name:
+    color = {"train": "blue", "val": "orange", "test": "red"}[split_name]
+    st.markdown(f"Data split: :{color}[**{split_name.upper()}**]")
 
 label_df = load_labeled(market)
 if label_df.empty:

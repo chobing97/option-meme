@@ -173,6 +173,23 @@ def load_predicted(market: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
+# ── Split info ────────────────────────────────────────────
+
+SPLITS_DIR = DATA_DIR / "models" / "splits"
+
+
+@st.cache_data(show_spinner=False)
+def load_split_dates(market: str) -> dict[str, set[str]]:
+    """Return {split_name: set_of_date_strings} for train/val/test."""
+    result: dict[str, set[str]] = {}
+    for split in ("train", "val", "test"):
+        path = SPLITS_DIR / f"{market}_{split}.parquet"
+        if path.exists():
+            dates = pd.read_parquet(path, columns=["date"])["date"].astype(str).unique()
+            result[split] = set(dates)
+    return result
+
+
 # ── Featured data ─────────────────────────────────────────
 
 
