@@ -21,7 +21,7 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
-from config.settings import SYMBOLS_DIR
+from config.settings import KR_TIMEZONE, SYMBOLS_DIR, US_TIMEZONE
 from src.collector.collection_tracker import CollectionTracker
 from src.collector.stock_info_db import StockInfoDB
 from src.collector.storage import save_bars, validate_bars
@@ -335,6 +335,16 @@ class BarFetcher:
             tv_df = None
 
         if tv_df is not None and not tv_df.empty:
+            # tvDatafeed returns naive timestamps in local system time (KST).
+            # yfinance strips to exchange-local time (KST for KR, ET for US).
+            # For US, convert KST → ET so timestamps match and dedup works.
+            if market == "us":
+                tv_df.index = (
+                    tv_df.index
+                    .tz_localize(KR_TIMEZONE)
+                    .tz_convert(US_TIMEZONE)
+                    .tz_localize(None)
+                )
             # save_bars가 내부적으로 기존 Parquet과 merge하되,
             # 중복 datetime은 keep="last"이므로 tv 데이터가 yf를 덮어씀
             bars = _save_and_track(tv_df, ticker, exchange, market, "tvdatafeed", self._tracker)
