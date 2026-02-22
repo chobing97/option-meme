@@ -110,20 +110,30 @@ def label_day(
         prices, open_price, prominence_pct, distance, width,
     )
 
+    # Shift labels to the next bar (+1) — act on confirmation, not the peak/trough itself
+    shifted_peak = peak_idx + 1
+    shifted_trough = trough_idx + 1
+    # Boundary: drop detections at the last bar (shifted index would be out of range)
+    shifted_peak = shifted_peak[shifted_peak < n_bars]
+    shifted_trough = shifted_trough[shifted_trough < n_bars]
+
     # Build labels array
     labels = np.full(n_bars, LABEL_NEITHER, dtype=int)
-    labels[peak_idx] = LABEL_PEAK
-    labels[trough_idx] = LABEL_TROUGH
+    labels[shifted_peak] = LABEL_PEAK
+    labels[shifted_trough] = LABEL_TROUGH
 
-    # Handle conflicts (same bar labeled as both peak and trough)
-    conflict_mask = np.isin(peak_idx, trough_idx)
+    # Handle conflicts (same shifted bar labeled as both peak and trough)
+    conflict_mask = np.isin(shifted_peak, shifted_trough)
     if conflict_mask.any():
-        conflict_bars = peak_idx[conflict_mask]
-        logger.warning(f"Peak/trough conflict at bars {conflict_bars} on {date_str}")
+        conflict_bars = shifted_peak[conflict_mask]
+        logger.warning(f"Peak/trough conflict at shifted bars {conflict_bars} on {date_str}")
         # Resolve by keeping the one with higher prominence
         for bar in conflict_bars:
-            p_idx = np.where(peak_idx == bar)[0][0]
-            t_idx = np.where(trough_idx == bar)[0][0]
+            # Map shifted index back to original detection index
+            p_orig = bar - 1
+            t_orig = bar - 1
+            p_idx = np.where(peak_idx == p_orig)[0][0]
+            t_idx = np.where(trough_idx == t_orig)[0][0]
             p_prom = peak_props["prominences"][p_idx]
             t_prom = trough_props["prominences"][t_idx]
             labels[bar] = LABEL_PEAK if p_prom >= t_prom else LABEL_TROUGH
