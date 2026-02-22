@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; padding: 0; overflow: hidden; }
+  #hint {
+    font-size: 11px;
+    color: #888;
+    padding: 2px 4px;
+    font-family: sans-serif;
+  }
+</style>
+</head>
+<body>
+<div id="hint"></div>
+<script>
+(function() {
+    function sendMsg(type, data) {
+        window.parent.postMessage(
+            Object.assign({isStreamlitMessage: true, type: type}, data || {}), "*"
+        );
+    }
+    function setReady() { sendMsg("streamlit:componentReady", {apiVersion: 1}); }
+    function setHeight(h) { sendMsg("streamlit:setFrameHeight", {height: h}); }
+    function setValue(v)  { sendMsg("streamlit:setComponentValue", {value: v}); }
+
+    window.addEventListener("message", function(e) {
+        if (e.data && e.data.type === "streamlit:render") {
+            setHeight(20);
+        }
+    });
+
+    try {
+        var doc = window.parent.document;
+        // Remove old handler so new component instance takes over
+        if (doc.__kbNavHandler) {
+            doc.removeEventListener("keydown", doc.__kbNavHandler);
+        }
+        function handler(e) {
+            var tag = (e.target.tagName || "").toLowerCase();
+            if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+            var map = {ArrowLeft:"left", ArrowRight:"right", ArrowUp:"up", ArrowDown:"down"};
+            var dir = map[e.key];
+            if (!dir) return;
+            e.preventDefault();
+            setValue(dir + "_" + Date.now());
+        }
+        doc.__kbNavHandler = handler;
+        doc.addEventListener("keydown", handler);
+        document.getElementById("hint").textContent = "\u2328\uFE0F \u2190\u2192 date \u00B7 \u2191\u2193 symbol";
+    } catch(err) {
+        document.getElementById("hint").textContent = "KB nav unavailable";
+    }
+
+    setReady();
+})();
+</script>
+</body>
+</html>

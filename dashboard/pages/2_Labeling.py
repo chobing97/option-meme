@@ -10,11 +10,16 @@ if str(PROJECT_ROOT) not in sys.path:
 import streamlit as st
 
 from dashboard.components.charts import make_editable_candlestick, make_label_distribution
-from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
+from dashboard.components.filters import (
+    date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
+    market_selector, reload_button, symbol_selector,
+)
 from dashboard.data_loader import get_stock_name_map, load_labeled, save_label_edit
 
 st.set_page_config(page_title="Labels", layout="wide")
 st.title("Phase 1: Peak/Trough Labels")
+
+kb_dir = kb_nav_read()
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -28,6 +33,7 @@ if df.empty:
 
 symbols = sorted(df["symbol"].unique().tolist())
 name_map = get_stock_name_map(market)
+kb_nav_apply_symbol(kb_dir, symbols, "label_symbol", "label_chart_date")
 symbol = symbol_selector(symbols, key="label_symbol", name_map=name_map)
 if symbol is None:
     st.stop()
@@ -61,10 +67,12 @@ st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 
 # ── Per-day chart (interactive editing) ───────────────────
 
-st.subheader("Labeled Chart (Interactive)")
+stock_label = f"{symbol}({name_map[symbol]})" if symbol in name_map else symbol
+st.subheader(f"Labeled Chart — {stock_label}")
 st.caption("Click a bar to cycle label: **None → Peak → Trough → None**")
 
 dates = sorted(sym_df["date"].unique()) if "date" in sym_df.columns else []
+kb_nav_apply_date(kb_dir, dates, "label_chart_date")
 if dates:
     selected_date = st.select_slider("Date", options=dates, value=dates[-1], key="label_chart_date")
     day_df = sym_df[sym_df["date"] == selected_date]

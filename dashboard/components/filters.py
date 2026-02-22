@@ -1,8 +1,10 @@
 """Sidebar filter widgets for the dashboard."""
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def reload_button() -> None:
@@ -84,3 +86,49 @@ def feature_selector(feature_cols: list[str], key: str = "features") -> list[str
         )
 
     return selected_cols
+
+
+_kb_nav_func = components.declare_component(
+    "kb_nav",
+    path=str(Path(__file__).parent / "kb_nav"),
+)
+
+
+def kb_nav_read() -> str | None:
+    """Render keyboard nav component, return direction ('left'/'right'/'up'/'down') or None."""
+    nav = _kb_nav_func(key="__kb_nav", default=None)
+    if nav is None:
+        return None
+    if nav == st.session_state.get("__kb_nav_handled"):
+        return None
+    st.session_state["__kb_nav_handled"] = nav
+    return nav.split("_")[0]
+
+
+def kb_nav_apply_symbol(direction: str | None, symbols: list, symbol_key: str, date_key: str) -> None:
+    """Handle ↑↓: change symbol, clear date. Must be called BEFORE symbol_selector."""
+    if direction not in ("up", "down") or not symbols:
+        return
+    cur = st.session_state.get(symbol_key, symbols[0])
+    try:
+        idx = list(symbols).index(cur)
+    except ValueError:
+        idx = 0
+    idx += -1 if direction == "up" else 1
+    idx = max(0, min(idx, len(symbols) - 1))
+    st.session_state[symbol_key] = symbols[idx]
+    st.session_state.pop(date_key, None)
+
+
+def kb_nav_apply_date(direction: str | None, dates: list, date_key: str) -> None:
+    """Handle ←→: change date. Must be called BEFORE select_slider."""
+    if direction not in ("left", "right") or not dates:
+        return
+    cur = st.session_state.get(date_key, dates[-1])
+    try:
+        idx = list(dates).index(cur)
+    except ValueError:
+        idx = len(dates) - 1
+    idx += 1 if direction == "right" else -1
+    idx = max(0, min(idx, len(dates) - 1))
+    st.session_state[date_key] = dates[idx]

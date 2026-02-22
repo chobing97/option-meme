@@ -14,11 +14,16 @@ from dashboard.components.charts import (
     make_candlestick_with_probs,
     make_label_distribution,
 )
-from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
+from dashboard.components.filters import (
+    date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
+    market_selector, reload_button, symbol_selector,
+)
 from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted, load_split_dates
 
 st.set_page_config(page_title="Predictions", layout="wide")
 st.title("Phase 5: Predictions")
+
+kb_dir = kb_nav_read()
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -35,6 +40,7 @@ if pred_df.empty:
 
 symbols = sorted(pred_df["symbol"].unique().tolist())
 name_map = get_stock_name_map(market)
+kb_nav_apply_symbol(kb_dir, symbols, "pred_symbol", "pred_chart_date")
 symbol = symbol_selector(symbols, key="pred_symbol", name_map=name_map)
 if symbol is None:
     st.stop()
@@ -70,9 +76,10 @@ st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 
 # ── Label vs Prediction ──────────────────────────────────
 
-st.subheader("Label vs Prediction")
+st.subheader(f"Label vs Prediction — {stock_label}")
 
 dates = sorted(sym_pred["date"].unique()) if "date" in sym_pred.columns else []
+kb_nav_apply_date(kb_dir, dates, "pred_chart_date")
 if dates:
     selected_date = st.select_slider("Date", options=dates, value=dates[-1], key="pred_chart_date")
     day_pred = sym_pred[sym_pred["date"] == selected_date]
