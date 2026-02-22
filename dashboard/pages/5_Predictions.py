@@ -67,9 +67,9 @@ cols[3].metric("Neither", f"{label_counts.get(0, 0):,}")
 
 st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 
-# ── Per-day prediction chart ─────────────────────────────
+# ── Label vs Prediction ──────────────────────────────────
 
-st.subheader("Prediction Chart")
+st.subheader("Label vs Prediction")
 
 dates = sorted(sym_pred["date"].unique()) if "date" in sym_pred.columns else []
 if dates:
@@ -79,17 +79,7 @@ else:
     selected_date = ""
     day_pred = sym_pred
 
-if not day_pred.empty:
-    st.plotly_chart(
-        make_candlestick_with_probs(day_pred, f"{stock_label} — Prediction — {selected_date}"),
-        use_container_width=True,
-    )
-
-# ── Side-by-side: Label vs Prediction ────────────────────
-
-st.subheader("Label vs Prediction")
 label_df = load_labeled(market)
-
 if label_df.empty:
     st.info("No labeled data available for comparison.")
 else:
@@ -101,7 +91,7 @@ else:
 
     if day_label.empty:
         st.info(f"No labeled data for {stock_label} on {selected_date}")
-    else:
+    elif not day_pred.empty:
         col_left, col_right = st.columns(2)
         with col_left:
             st.markdown("**Ground Truth (Label)**")
