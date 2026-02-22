@@ -19,6 +19,20 @@ def market_selector(key: str = "market") -> str:
     return st.sidebar.radio("Market", ["kr", "us"], format_func=str.upper, key=key, horizontal=True)
 
 
+def label_config_selector(key: str = "label_config") -> str:
+    """L1/L2 radio selector. Loads keys from variants.py."""
+    from config.variants import LABEL_CONFIGS
+    options = sorted(LABEL_CONFIGS.keys())
+    return st.sidebar.radio("Label Config", options, key=key, horizontal=True)
+
+
+def model_config_selector(key: str = "model_config") -> str:
+    """M1~M4 radio selector. Loads keys from variants.py."""
+    from config.variants import MODEL_CONFIGS
+    options = sorted(MODEL_CONFIGS.keys())
+    return st.sidebar.radio("Model Config", options, key=key, horizontal=True)
+
+
 def symbol_selector(
     symbols: list[str],
     key: str = "symbol",

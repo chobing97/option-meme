@@ -15,7 +15,9 @@ from dashboard.components.charts import (
     make_feature_histogram,
     make_violin_by_label,
 )
-from dashboard.components.filters import feature_selector, market_selector, reload_button
+from dashboard.components.filters import (
+    feature_selector, label_config_selector, market_selector, model_config_selector, reload_button,
+)
 from dashboard.data_loader import get_feature_column_list, get_featured_summary, load_featured
 
 st.set_page_config(page_title="Features", layout="wide")
@@ -25,15 +27,17 @@ st.title("Phase 2: Feature Analysis")
 
 reload_button()
 market = market_selector(key="feat_market")
+lc = label_config_selector(key="feat_lc")
+mc = model_config_selector(key="feat_mc")
 
-summary = get_featured_summary(market)
+summary = get_featured_summary(market, lc, mc)
 if not summary.get("exists"):
     st.warning(f"No featured data for **{market.upper()}**. Run: `python run_pipeline.py features --market {market}`")
     st.stop()
 
 st.sidebar.markdown(f"**Rows:** {summary['total_rows']:,}  |  **Features:** {summary['n_features']}  |  **Size:** {summary['file_size_mb']} MB")
 
-all_features = get_feature_column_list(market)
+all_features = get_feature_column_list(market, lc, mc)
 selected_features = feature_selector(all_features, key="feat_sel")
 
 if not selected_features:
@@ -42,7 +46,7 @@ if not selected_features:
 
 # ── Load data ─────────────────────────────────────────────
 
-df = load_featured(market, columns=selected_features)
+df = load_featured(market, lc, mc, columns=selected_features)
 if df.empty:
     st.warning("Failed to load featured data.")
     st.stop()

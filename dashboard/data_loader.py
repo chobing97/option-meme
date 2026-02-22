@@ -38,6 +38,27 @@ FEATURED_DIR = PROCESSED_DIR / "featured"
 MODELS_DIR = DATA_DIR / "models"
 
 
+def _labeled_path(market: str, label_config: str) -> Path:
+    return LABELED_DIR / label_config / f"{market}_labeled.parquet"
+
+
+def _featured_path(market: str, label_config: str, model_config: str) -> Path:
+    return FEATURED_DIR / label_config / model_config / f"{market}_featured.parquet"
+
+
+def _model_path(market: str, label_config: str, model_config: str, mtype: str, target: str) -> Path:
+    ext = "txt" if mtype == "lgb" else "pt"
+    return MODELS_DIR / label_config / model_config / f"{mtype}_{market}_{target}.{ext}"
+
+
+def _splits_path(market: str, label_config: str, model_config: str, split: str) -> Path:
+    return MODELS_DIR / label_config / model_config / "splits" / f"{market}_{split}.parquet"
+
+
+def _predicted_path(market: str, label_config: str, model_config: str) -> Path:
+    return PREDICTIONS_DIR / label_config / model_config / f"{market}_predicted.parquet"
+
+
 def _raw_symbols(market: str) -> list[str]:
     """List available symbols in raw data directory."""
     market_dir = RAW_DIR / market
@@ -92,24 +113,26 @@ def get_raw_summary(market: str) -> dict:
 # ── Labeled data ──────────────────────────────────────────
 
 
-def _load_manual_overrides(market: str) -> pd.DataFrame:
+def _load_manual_overrides(market: str, label_config: str) -> pd.DataFrame:
     """Load manual label overrides (empty DataFrame if none exist)."""
-    path = LABELED_MANUAL_DIR / f"{market}_manual.parquet"
+    path = LABELED_MANUAL_DIR / label_config / f"{market}_manual.parquet"
     if not path.exists():
         return pd.DataFrame(columns=["symbol", "datetime", "label"])
     return pd.read_parquet(path)
 
 
 @st.cache_data(show_spinner="Loading labeled data...")
-def load_labeled(market: str) -> pd.DataFrame:
+def load_labeled(market: str, label_config: str) -> pd.DataFrame:
     """Load auto-generated labels, then overlay manual overrides."""
-    from src.labeler.label_generator import load_labeled as _load_labeled
+    path = _labeled_path(market, label_config)
+    if not path.exists():
+        return pd.DataFrame()
 
-    df = _load_labeled(market)
+    df = pd.read_parquet(path)
     if df.empty:
         return df
 
-    manual = _load_manual_overrides(market)
+    manual = _load_manual_overrides(market, label_config)
     if manual.empty:
         return df
 
@@ -123,9 +146,9 @@ def load_labeled(market: str) -> pd.DataFrame:
     return merged
 
 
-def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int) -> None:
+def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int, label_config: str) -> None:
     """Upsert a manual label override and clear cache."""
-    manual = _load_manual_overrides(market)
+    manual = _load_manual_overrides(market, label_config)
     dt = pd.to_datetime(datetime_str)
 
     mask = (manual["symbol"] == symbol) & (manual["datetime"] == dt)
@@ -140,15 +163,16 @@ def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int)
             ignore_index=True,
         )
 
-    LABELED_MANUAL_DIR.mkdir(parents=True, exist_ok=True)
-    manual.to_parquet(LABELED_MANUAL_DIR / f"{market}_manual.parquet", index=False)
+    out_dir = LABELED_MANUAL_DIR / label_config
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manual.to_parquet(out_dir / f"{market}_manual.parquet", index=False)
     st.cache_data.clear()
-    logger.info("Manual override saved: %s %s -> %d", symbol, datetime_str, new_label)
+    logger.info("Manual override saved: %s %s %s -> %d", label_config, symbol, datetime_str, new_label)
 
 
 @st.cache_data(show_spinner="Summarising labels...")
-def get_labeled_summary(market: str) -> dict:
-    path = LABELED_DIR / f"{market}_labeled.parquet"
+def get_labeled_summary(market: str, label_config: str) -> dict:
+    path = _labeled_path(market, label_config)
     if not path.exists():
         return {"exists": False}
     df = pd.read_parquet(path, columns=["label", "symbol", "datetime"])
@@ -165,9 +189,9 @@ def get_labeled_summary(market: str) -> dict:
 
 
 @st.cache_data(show_spinner="Loading predictions...")
-def load_predicted(market: str) -> pd.DataFrame:
+def load_predicted(market: str, label_config: str, model_config: str) -> pd.DataFrame:
     """Load predicted labels from PREDICTIONS_DIR."""
-    path = PREDICTIONS_DIR / f"{market}_predicted.parquet"
+    path = _predicted_path(market, label_config, model_config)
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
@@ -175,15 +199,12 @@ def load_predicted(market: str) -> pd.DataFrame:
 
 # ── Split info ────────────────────────────────────────────
 
-SPLITS_DIR = DATA_DIR / "models" / "splits"
-
-
 @st.cache_data(show_spinner=False)
-def load_split_dates(market: str) -> dict[str, set[str]]:
+def load_split_dates(market: str, label_config: str, model_config: str) -> dict[str, set[str]]:
     """Return {split_name: set_of_date_strings} for train/val/test."""
     result: dict[str, set[str]] = {}
     for split in ("train", "val", "test"):
-        path = SPLITS_DIR / f"{market}_{split}.parquet"
+        path = _splits_path(market, label_config, model_config, split)
         if path.exists():
             dates = pd.read_parquet(path, columns=["date"])["date"].astype(str).unique()
             result[split] = set(dates)
@@ -194,9 +215,9 @@ def load_split_dates(market: str) -> dict[str, set[str]]:
 
 
 @st.cache_data(show_spinner="Loading feature columns...")
-def get_feature_column_list(market: str) -> list[str]:
+def get_feature_column_list(market: str, label_config: str, model_config: str) -> list[str]:
     """Read only the column names from featured parquet (fast)."""
-    path = FEATURED_DIR / f"{market}_featured.parquet"
+    path = _featured_path(market, label_config, model_config)
     if not path.exists():
         return []
     import pyarrow.parquet as pq
@@ -209,9 +230,9 @@ def get_feature_column_list(market: str) -> list[str]:
 
 
 @st.cache_data(show_spinner="Loading features...")
-def load_featured(market: str, columns: list[str] | None = None, max_rows: int = 50_000) -> pd.DataFrame:
+def load_featured(market: str, label_config: str, model_config: str, columns: list[str] | None = None, max_rows: int = 50_000) -> pd.DataFrame:
     """Load featured parquet with optional column filtering and row sampling."""
-    path = FEATURED_DIR / f"{market}_featured.parquet"
+    path = _featured_path(market, label_config, model_config)
     if not path.exists():
         return pd.DataFrame()
     read_cols = None
@@ -225,8 +246,8 @@ def load_featured(market: str, columns: list[str] | None = None, max_rows: int =
 
 
 @st.cache_data(show_spinner="Summarising features...")
-def get_featured_summary(market: str) -> dict:
-    path = FEATURED_DIR / f"{market}_featured.parquet"
+def get_featured_summary(market: str, label_config: str, model_config: str) -> dict:
+    path = _featured_path(market, label_config, model_config)
     if not path.exists():
         return {"exists": False}
     import pyarrow.parquet as pq
@@ -246,11 +267,11 @@ def get_featured_summary(market: str) -> dict:
 
 
 @st.cache_data(show_spinner="Evaluating model...", ttl=3600)
-def run_model_evaluation(market: str) -> dict | None:
+def run_model_evaluation(market: str, label_config: str, model_config: str) -> dict | None:
     """Load LightGBM models and run full_evaluation on the test split."""
-    featured_path = FEATURED_DIR / f"{market}_featured.parquet"
-    peak_model_path = MODELS_DIR / f"lgb_{market}_peak.txt"
-    trough_model_path = MODELS_DIR / f"lgb_{market}_trough.txt"
+    featured_path = _featured_path(market, label_config, model_config)
+    peak_model_path = _model_path(market, label_config, model_config, "lgb", "peak")
+    trough_model_path = _model_path(market, label_config, model_config, "lgb", "trough")
 
     if not all(p.exists() for p in [featured_path, peak_model_path, trough_model_path]):
         return None
@@ -285,11 +306,11 @@ def run_model_evaluation(market: str) -> dict | None:
 
 
 @st.cache_data(show_spinner="Computing PR curve data...", ttl=3600)
-def get_pr_curve_data(market: str, target_label: int) -> dict | None:
+def get_pr_curve_data(market: str, label_config: str, model_config: str, target_label: int) -> dict | None:
     """Get precision-recall curve arrays for plotting."""
-    featured_path = FEATURED_DIR / f"{market}_featured.parquet"
+    featured_path = _featured_path(market, label_config, model_config)
     label_name = "peak" if target_label == 1 else "trough"
-    model_path = MODELS_DIR / f"lgb_{market}_{label_name}.txt"
+    model_path = _model_path(market, label_config, model_config, "lgb", label_name)
 
     if not featured_path.exists() or not model_path.exists():
         return None
@@ -317,11 +338,11 @@ def get_pr_curve_data(market: str, target_label: int) -> dict | None:
 
 
 @st.cache_data(show_spinner="Loading feature importance...", ttl=3600)
-def get_feature_importance(market: str, target_label: int, top_n: int = 20) -> pd.DataFrame:
+def get_feature_importance(market: str, label_config: str, model_config: str, target_label: int, top_n: int = 20) -> pd.DataFrame:
     """Extract feature importance from LightGBM model."""
     label_name = "peak" if target_label == 1 else "trough"
-    model_path = MODELS_DIR / f"lgb_{market}_{label_name}.txt"
-    featured_path = FEATURED_DIR / f"{market}_featured.parquet"
+    model_path = _model_path(market, label_config, model_config, "lgb", label_name)
+    featured_path = _featured_path(market, label_config, model_config)
 
     if not model_path.exists() or not featured_path.exists():
         return pd.DataFrame()
@@ -348,12 +369,11 @@ def get_feature_importance(market: str, target_label: int, top_n: int = 20) -> p
 # ── Model file checks ────────────────────────────────────
 
 
-def get_model_status(market: str) -> dict:
+def get_model_status(market: str, label_config: str, model_config: str) -> dict:
     """Check existence of model files for a market."""
     models = {}
     for mtype in ["lgb", "lstm"]:
         for target in ["peak", "trough"]:
-            ext = "txt" if mtype == "lgb" else "pt"
-            path = MODELS_DIR / f"{mtype}_{market}_{target}.{ext}"
+            path = _model_path(market, label_config, model_config, mtype, target)
             models[f"{mtype}_{target}"] = path.exists()
     return models

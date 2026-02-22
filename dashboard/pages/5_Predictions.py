@@ -16,7 +16,7 @@ from dashboard.components.charts import (
 )
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    market_selector, reload_button, symbol_selector,
+    label_config_selector, market_selector, model_config_selector, reload_button, symbol_selector,
 )
 from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted, load_split_dates
 
@@ -29,7 +29,9 @@ kb_dir = kb_nav_read()
 
 reload_button()
 market = market_selector(key="pred_market")
-pred_df = load_predicted(market)
+lc = label_config_selector(key="pred_lc")
+mc = model_config_selector(key="pred_mc")
+pred_df = load_predicted(market, lc, mc)
 
 if pred_df.empty:
     st.warning(
@@ -88,14 +90,14 @@ else:
     day_pred = sym_pred
 
 # Show which split the selected date belongs to
-split_dates = load_split_dates(market)
+split_dates = load_split_dates(market, lc, mc)
 date_str = str(selected_date) if selected_date else ""
 split_name = next((s for s, ds in split_dates.items() if date_str in ds), None)
 if split_name:
     color = {"train": "blue", "val": "orange", "test": "red"}[split_name]
     st.markdown(f"Data split: :{color}[**{split_name.upper()}**]")
 
-label_df = load_labeled(market)
+label_df = load_labeled(market, lc)
 if label_df.empty:
     st.info("No labeled data available for comparison.")
 else:

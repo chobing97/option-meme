@@ -12,7 +12,7 @@ import streamlit as st
 from dashboard.components.charts import make_editable_candlestick, make_label_distribution
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    market_selector, reload_button, symbol_selector,
+    label_config_selector, market_selector, reload_button, symbol_selector,
 )
 from dashboard.data_loader import get_stock_name_map, load_labeled, save_label_edit
 
@@ -25,7 +25,8 @@ kb_dir = kb_nav_read()
 
 reload_button()
 market = market_selector(key="label_market")
-df = load_labeled(market)
+label_config = label_config_selector(key="label_lc")
+df = load_labeled(market, label_config)
 
 if df.empty:
     st.warning(f"No labeled data for **{market.upper()}**. Run: `python run_pipeline.py labeler --market {market}`")
@@ -107,7 +108,7 @@ if not day_df.empty:
             if not match.empty:
                 current_label = int(match.iloc[0]["label"])
                 new_label = (current_label + 1) % 3  # 0→1→2→0
-                save_label_edit(market, symbol, clicked_dt, new_label)
+                save_label_edit(market, symbol, clicked_dt, new_label, label_config)
                 st.rerun()
 
 # ── Label stats ───────────────────────────────────────────

@@ -15,7 +15,9 @@ from dashboard.components.charts import (
     make_pr_curve,
     make_time_error_chart,
 )
-from dashboard.components.filters import market_selector, reload_button
+from dashboard.components.filters import (
+    label_config_selector, market_selector, model_config_selector, reload_button,
+)
 from dashboard.components.metrics import backtest_summary
 from dashboard.data_loader import (
     get_feature_importance,
@@ -31,10 +33,12 @@ st.title("Phase 3: Model Performance")
 
 reload_button()
 market = market_selector(key="model_market")
+lc = label_config_selector(key="model_lc")
+mc = model_config_selector(key="model_mc")
 
 # ── Model file check ─────────────────────────────────────
 
-model_status = get_model_status(market)
+model_status = get_model_status(market, lc, mc)
 st.subheader("Model Files")
 
 cols = st.columns(4)
@@ -61,7 +65,7 @@ if not (lgb_peak and lgb_trough):
 st.subheader("Evaluation (LightGBM)")
 st.caption("Results are cached for 1 hour.")
 
-eval_result = run_model_evaluation(market)
+eval_result = run_model_evaluation(market, lc, mc)
 if eval_result is None:
     st.warning("Evaluation failed — check that featured data and models exist.")
     st.stop()
@@ -84,7 +88,7 @@ pr_col1, pr_col2 = st.columns(2)
 
 for col, target_label, label_name in [(pr_col1, 1, "Peak"), (pr_col2, 2, "Trough")]:
     with col:
-        pr_data = get_pr_curve_data(market, target_label)
+        pr_data = get_pr_curve_data(market, lc, mc, target_label)
         if pr_data:
             st.plotly_chart(make_pr_curve(pr_data, label_name), use_container_width=True)
         else:
@@ -134,7 +138,7 @@ fi_col1, fi_col2 = st.columns(2)
 
 for col, target_label, label_name in [(fi_col1, 1, "Peak"), (fi_col2, 2, "Trough")]:
     with col:
-        imp_df = get_feature_importance(market, target_label)
+        imp_df = get_feature_importance(market, lc, mc, target_label)
         if not imp_df.empty:
             st.plotly_chart(make_feature_importance_bar(imp_df), use_container_width=True)
         else:
