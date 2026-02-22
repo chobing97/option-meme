@@ -15,7 +15,7 @@ from dashboard.components.charts import (
     make_feature_histogram,
     make_violin_by_label,
 )
-from dashboard.components.filters import feature_selector, market_selector
+from dashboard.components.filters import feature_selector, market_selector, reload_button
 from dashboard.data_loader import get_feature_column_list, get_featured_summary, load_featured
 
 st.set_page_config(page_title="Features", layout="wide")
@@ -23,6 +23,7 @@ st.title("Phase 2: Feature Analysis")
 
 # ── Sidebar ───────────────────────────────────────────────
 
+reload_button()
 market = market_selector(key="feat_market")
 
 summary = get_featured_summary(market)

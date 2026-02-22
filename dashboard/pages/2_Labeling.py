@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import streamlit as st
 
 from dashboard.components.charts import make_editable_candlestick, make_label_distribution
-from dashboard.components.filters import date_range_selector, market_selector, symbol_selector
+from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
 from dashboard.data_loader import get_stock_name_map, load_labeled, save_label_edit
 
 st.set_page_config(page_title="Labels", layout="wide")
@@ -18,6 +18,7 @@ st.title("Phase 1: Peak/Trough Labels")
 
 # ── Sidebar ───────────────────────────────────────────────
 
+reload_button()
 market = market_selector(key="label_market")
 df = load_labeled(market)
 

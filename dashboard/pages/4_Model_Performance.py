@@ -15,7 +15,7 @@ from dashboard.components.charts import (
     make_pr_curve,
     make_time_error_chart,
 )
-from dashboard.components.filters import market_selector
+from dashboard.components.filters import market_selector, reload_button
 from dashboard.components.metrics import backtest_summary
 from dashboard.data_loader import (
     get_feature_importance,
@@ -29,6 +29,7 @@ st.title("Phase 3: Model Performance")
 
 # ── Sidebar ───────────────────────────────────────────────
 
+reload_button()
 market = market_selector(key="model_market")
 
 # ── Model file check ─────────────────────────────────────

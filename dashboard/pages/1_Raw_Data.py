@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from dashboard.components.charts import make_candlestick
-from dashboard.components.filters import date_range_selector, market_selector, symbol_selector
+from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
 from dashboard.data_loader import get_raw_symbols, get_stock_name_map, load_raw_bars
 
 st.set_page_config(page_title="Raw Data", layout="wide")
@@ -19,6 +19,7 @@ st.title("Phase 0: Raw OHLCV Data")
 
 # ── Sidebar filters ───────────────────────────────────────
 
+reload_button()
 market = market_selector(key="raw_market")
 symbols = get_raw_symbols(market)
 

@@ -14,7 +14,7 @@ from dashboard.components.charts import (
     make_candlestick_with_probs,
     make_label_distribution,
 )
-from dashboard.components.filters import date_range_selector, market_selector, symbol_selector
+from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
 from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted
 
 st.set_page_config(page_title="Predictions", layout="wide")
@@ -22,6 +22,7 @@ st.title("Phase 5: Predictions")
 
 # ── Sidebar ───────────────────────────────────────────────
 
+reload_button()
 market = market_selector(key="pred_market")
 pred_df = load_predicted(market)
 

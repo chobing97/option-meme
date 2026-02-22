@@ -5,6 +5,13 @@ from datetime import date, timedelta
 import streamlit as st
 
 
+def reload_button() -> None:
+    """Sidebar button to clear all cached data and rerun."""
+    if st.sidebar.button("Reload data"):
+        st.cache_data.clear()
+        st.rerun()
+
+
 def market_selector(key: str = "market") -> str:
     """Radio button to pick KR or US market."""
     return st.sidebar.radio("Market", ["kr", "us"], format_func=str.upper, key=key, horizontal=True)
