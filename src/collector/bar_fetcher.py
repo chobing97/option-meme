@@ -295,11 +295,15 @@ class BarFetcher:
         ticker: str,
         exchange: str,
         market: str,
+        full: bool = False,
     ) -> Optional[pd.DataFrame]:
         """Collect a single symbol with two-phase strategy.
 
         Phase 1: yfinance (~60일치 base)
         Phase 2: tvDatafeed (~13일치 overlay, 겹치는 구간 덮어쓰기)
+
+        Args:
+            full: If True, clear existing data before saving (fresh start).
 
         Returns:
             The final merged DataFrame, or None if both sources fail.
@@ -310,12 +314,23 @@ class BarFetcher:
         if ":" in exchange:
             tv_exchange, tv_symbol = exchange.split(":", 1)
 
+        # ── Full mode: clear existing data first ──────
+        if full:
+            from src.collector.storage import RAW_DIR
+            symbol_dir = RAW_DIR / market / ticker
+            if symbol_dir.exists():
+                for pf in symbol_dir.glob("*.parquet"):
+                    pf.unlink()
+                logger.debug(f"Full mode: cleared existing parquets for {ticker}")
+
         # ── Phase 1: yfinance ──────────────────────────
         logger.info(f"[1/2] yfinance 수집: {ticker} ({market})")
         yf_df = fetch_yfinance(ticker, market)
 
         if yf_df is not None and not yf_df.empty:
-            bars = _save_and_track(yf_df, ticker, exchange, market, "yfinance", self._tracker)
+            bars = _save_and_track(
+                yf_df, ticker, exchange, market, "yfinance", self._tracker,
+            )
             logger.info(f"  yfinance: {bars} bars 저장 완료")
         else:
             logger.warning(f"  yfinance: {ticker} 데이터 없음")

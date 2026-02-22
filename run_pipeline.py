@@ -109,8 +109,8 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
                 logger.info(f"[{idx + 1}/{total}] {ticker}")
 
                 if full:
-                    # Full collection: let collect_single handle everything
-                    fetcher.collect_single(ticker, exchange, market)
+                    # Full collection: clear existing + fresh collect
+                    fetcher.collect_single(ticker, exchange, market, full=True)
                 else:
                     # Incremental: check last collected date
                     date_range = get_symbol_date_range(market, ticker)
@@ -141,8 +141,17 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
                                 exchange.split(":")[0] if ":" in exchange else exchange,
                             )
                             if tv_df is not None and not tv_df.empty:
+                                from config.settings import KR_TIMEZONE, US_TIMEZONE
                                 from src.collector.storage import save_bars
 
+                                # tvDatafeed returns KST timestamps; convert to ET for US
+                                if market == "us":
+                                    tv_df.index = (
+                                        tv_df.index
+                                        .tz_localize(KR_TIMEZONE)
+                                        .tz_convert(US_TIMEZONE)
+                                        .tz_localize(None)
+                                    )
                                 save_bars(tv_df, market=market, symbol=ticker)
                                 logger.info(f"  tvDatafeed overlay: {len(tv_df)} bars")
                         except Exception as e:
