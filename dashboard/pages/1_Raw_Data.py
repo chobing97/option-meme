@@ -11,11 +11,16 @@ import pandas as pd
 import streamlit as st
 
 from dashboard.components.charts import make_candlestick
-from dashboard.components.filters import date_range_selector, market_selector, reload_button, symbol_selector
+from dashboard.components.filters import (
+    date_range_selector, kb_nav_apply_symbol, kb_nav_read,
+    market_selector, reload_button, symbol_selector,
+)
 from dashboard.data_loader import get_raw_symbols, get_stock_name_map, load_raw_bars
 
 st.set_page_config(page_title="Raw Data", layout="wide")
 st.title("Phase 0: Raw OHLCV Data")
+
+kb_dir = kb_nav_read()
 
 # ── Sidebar filters ───────────────────────────────────────
 
@@ -28,6 +33,7 @@ if not symbols:
     st.stop()
 
 name_map = get_stock_name_map(market)
+kb_nav_apply_symbol(kb_dir, symbols, "raw_symbol", "raw_dates_start")
 symbol = symbol_selector(symbols, key="raw_symbol", name_map=name_map)
 if symbol is None:
     st.stop()
