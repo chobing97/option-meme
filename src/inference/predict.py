@@ -16,6 +16,8 @@ def predict_all(
     market: str,
     model_type: str = "gbm",
     threshold: float = 0.5,
+    label_config: Optional[str] = None,
+    model_config: Optional[str] = None,
 ) -> pd.DataFrame:
     """Batch predict all symbols/dates from featured parquet.
 
@@ -26,6 +28,8 @@ def predict_all(
         market: 'kr' or 'us'
         model_type: 'gbm' (only gbm supported for batch)
         threshold: Probability threshold for peak/trough classification
+        label_config: Label variant key (e.g. 'L1', 'L2'). None for legacy path.
+        model_config: Model variant key (e.g. 'M1'~'M4'). None for legacy path.
 
     Returns:
         DataFrame with predictions in labeled format (includes peak_prob, trough_prob).
@@ -33,8 +37,11 @@ def predict_all(
     from src.features.feature_pipeline import get_all_feature_columns
     from src.model.train_gbm import load_model
 
-    # 1. Load featured data
-    featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
+    # 1. Load featured data (variant-aware path)
+    if label_config and model_config:
+        featured_path = PROCESSED_DIR / "featured" / label_config / model_config / f"{market}_featured.parquet"
+    else:
+        featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
     if not featured_path.exists():
         raise FileNotFoundError(
             f"Featured data not found: {featured_path}\n"
@@ -54,8 +61,11 @@ def predict_all(
     X = df[feature_cols].values.astype(np.float32)
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # 4. Load models and predict
-    models_dir = DATA_DIR / "models"
+    # 4. Load models and predict (variant-aware path)
+    if label_config and model_config:
+        models_dir = DATA_DIR / "models" / label_config / model_config
+    else:
+        models_dir = DATA_DIR / "models"
     peak_path = models_dir / f"lgb_{market}_peak.txt"
     trough_path = models_dir / f"lgb_{market}_trough.txt"
 
@@ -91,9 +101,13 @@ def predict_all(
     result["peak_prob"] = np.round(peak_proba, 4).astype(np.float32)
     result["trough_prob"] = np.round(trough_proba, 4).astype(np.float32)
 
-    # 7. Save
-    PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = PREDICTIONS_DIR / f"{market}_predicted.parquet"
+    # 7. Save (variant-aware path)
+    if label_config and model_config:
+        pred_dir = PREDICTIONS_DIR / label_config / model_config
+    else:
+        pred_dir = PREDICTIONS_DIR
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    output_path = pred_dir / f"{market}_predicted.parquet"
     result.to_parquet(output_path, index=False, compression="snappy")
 
     n_peaks = int((labels == 1).sum())
@@ -112,6 +126,8 @@ def predict_symbol(
     model_type: str = "gbm",
     threshold: float = 0.5,
     date: Optional[str] = None,
+    label_config: Optional[str] = None,
+    model_config: Optional[str] = None,
 ) -> dict:
     """Run prediction pipeline for a single symbol.
 
@@ -121,6 +137,8 @@ def predict_symbol(
         model_type: 'gbm', 'lstm', or 'all'
         threshold: Probability threshold for signal detection.
         date: Target date (YYYY-MM-DD). Latest trading day if None.
+        label_config: Label variant key (e.g. 'L1', 'L2'). None for legacy path.
+        model_config: Model variant key (e.g. 'M1'~'M4'). None for legacy path.
 
     Returns:
         Dict with prediction results, signals, and metadata.
@@ -133,6 +151,15 @@ def predict_symbol(
         get_all_feature_columns,
     )
     from src.labeler.session_extractor import extract_early_session
+
+    # Resolve model variant settings for lookback/fill
+    gbm_lookback = LOOKBACK_WINDOW
+    fill_method = "0fill"
+    if model_config:
+        from config.variants import MODEL_CONFIGS
+        mcfg = MODEL_CONFIGS[model_config]
+        gbm_lookback = mcfg["gbm_lookback"]
+        fill_method = mcfg["fill_method"]
 
     # 1. Load raw OHLCV
     logger.info(f"Loading bars for {market}/{symbol}...")
@@ -176,7 +203,7 @@ def predict_symbol(
         multi_day_df["label"] = 0
 
     multi_day_df = build_features(multi_day_df)
-    multi_day_df = build_lookback_features(multi_day_df)
+    multi_day_df = build_lookback_features(multi_day_df, lookback=gbm_lookback, fill_method=fill_method)
     multi_day_df = clean_features(multi_day_df)
 
     feature_cols = get_all_feature_columns(multi_day_df)
@@ -194,7 +221,8 @@ def predict_symbol(
     logger.info(f"Predicting on {len(target_df)} bars with {len(feature_cols)} features")
 
     # 5. Load models and predict
-    models = _load_models(market, model_type, feature_cols, target_df)
+    models = _load_models(market, model_type, feature_cols, target_df,
+                          label_config=label_config, model_config=model_config)
 
     # 6. Run predictions per model type
     results = {
@@ -262,20 +290,35 @@ def _load_models(
     model_type: str,
     feature_cols: list[str],
     target_df: pd.DataFrame,
+    label_config: Optional[str] = None,
+    model_config: Optional[str] = None,
 ) -> dict:
     """Load models and run predictions.
 
     Returns:
         Dict mapping model type string to dict with 'peak' and 'trough' probability arrays.
     """
-    models_dir = DATA_DIR / "models"
+    if label_config and model_config:
+        models_dir = DATA_DIR / "models" / label_config / model_config
+    else:
+        models_dir = DATA_DIR / "models"
     results = {}
 
     if model_type in ("gbm", "all"):
         results["LightGBM"] = _predict_gbm(models_dir, market, feature_cols, target_df)
 
     if model_type in ("lstm", "all"):
-        results["LSTM"] = _predict_lstm(models_dir, market, feature_cols, target_df)
+        fill_method = "drop"
+        lstm_lookback = LOOKBACK_WINDOW
+        if model_config:
+            from config.variants import MODEL_CONFIGS
+            mcfg = MODEL_CONFIGS[model_config]
+            fill_method = mcfg["fill_method"]
+            lstm_lookback = mcfg["lstm_lookback"]
+        results["LSTM"] = _predict_lstm(
+            models_dir, market, feature_cols, target_df,
+            fill_method=fill_method, lstm_lookback=lstm_lookback,
+        )
 
     if not results:
         raise ValueError(f"No models loaded for model_type='{model_type}'")
@@ -323,6 +366,8 @@ def _predict_lstm(
     market: str,
     feature_cols: list[str],
     target_df: pd.DataFrame,
+    fill_method: str = "drop",
+    lstm_lookback: int = LOOKBACK_WINDOW,
 ) -> dict[str, np.ndarray]:
     """Load LSTM models and predict."""
     import torch
@@ -359,13 +404,20 @@ def _predict_lstm(
     peak_model = load_model(peak_path, n_features=n_features)
     trough_model = load_model(trough_path, n_features=n_features)
 
-    peak_ds = TimeSeriesDataset(df_for_ds, target_label=1, feature_cols=feature_cols)
-    trough_ds = TimeSeriesDataset(df_for_ds, target_label=2, feature_cols=feature_cols)
+    peak_ds = TimeSeriesDataset(
+        df_for_ds, target_label=1, lookback=lstm_lookback,
+        feature_cols=feature_cols, fill_method=fill_method,
+    )
+    trough_ds = TimeSeriesDataset(
+        df_for_ds, target_label=2, lookback=lstm_lookback,
+        feature_cols=feature_cols, fill_method=fill_method,
+    )
 
     peak_proba = predict(peak_model, peak_ds, device=device)
     trough_proba = predict(trough_model, trough_ds, device=device)
 
-    # LSTM drops the first `lookback` bars per day, so pad with zeros to align
+    # When fill_method="drop", LSTM drops the first `lookback` bars per day,
+    # so pad with zeros to align. With "0fill", all bars are included.
     n_target = len(target_df)
     if len(peak_proba) < n_target:
         pad_len = n_target - len(peak_proba)

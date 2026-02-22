@@ -183,6 +183,7 @@ class TimeSeriesDataset(Dataset):
         target_label: int,
         lookback: int = LOOKBACK_WINDOW,
         feature_cols: Optional[list[str]] = None,
+        fill_method: str = "drop",
     ):
         """
         Args:
@@ -190,6 +191,9 @@ class TimeSeriesDataset(Dataset):
             target_label: Which label to predict (1=peak, 2=trough).
             lookback: Number of past bars as input sequence.
             feature_cols: Feature columns to use.
+            fill_method: How to handle early bars with insufficient lookback.
+                "drop" — skip first `lookback` bars per day (default, M1 style).
+                "0fill" — zero-pad early bars (M2/M3/M4 style).
         """
         if feature_cols is None:
             feature_cols = get_all_feature_columns(df)
@@ -197,6 +201,7 @@ class TimeSeriesDataset(Dataset):
         self.feature_cols = feature_cols
         self.lookback = lookback
         self.target_label = target_label
+        self.fill_method = fill_method
 
         # Build sequences per day to avoid cross-day leakage
         self.sequences = []
@@ -219,11 +224,22 @@ class TimeSeriesDataset(Dataset):
         features = df[self.feature_cols].values.astype(np.float32)
         labels = (df["label"] == self.target_label).astype(int).values
 
-        for i in range(self.lookback, len(features)):
-            seq = features[i - self.lookback : i]  # [lookback, n_features]
-            target = labels[i]
-            self.sequences.append(seq)
-            self.targets.append(target)
+        if self.fill_method == "0fill":
+            # Include all bars, zero-padding early ones
+            for i in range(len(features)):
+                if i < self.lookback:
+                    pad = np.zeros((self.lookback - i, features.shape[1]), dtype=np.float32)
+                    seq = np.vstack([pad, features[:i]]) if i > 0 else pad
+                else:
+                    seq = features[i - self.lookback : i]
+                self.sequences.append(seq)
+                self.targets.append(labels[i])
+        else:
+            # Drop: skip first `lookback` bars per day
+            for i in range(self.lookback, len(features)):
+                seq = features[i - self.lookback : i]  # [lookback, n_features]
+                self.sequences.append(seq)
+                self.targets.append(labels[i])
 
     def __len__(self) -> int:
         return len(self.sequences)

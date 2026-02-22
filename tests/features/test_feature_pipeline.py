@@ -44,11 +44,25 @@ class TestFeaturePipeline:
             col_name = f"{base_cols[0]}_lag{lag}"
             assert col_name in result.columns, f"Missing {col_name}"
 
-    def test_lookback_rows_dropped(self, feature_df):
+    def test_lookback_0fill_preserves_all_rows(self, feature_df):
         featured = build_features(feature_df)
-        result = build_lookback_features(featured, lookback=10)
-        # 10 rows from shift + 2 from base NaN in pf_acceleration (first sorted feature)
+        result = build_lookback_features(featured, lookback=10, fill_method="0fill")
+        # 0-fill: all rows preserved
+        assert len(result) == 60
+
+    def test_lookback_drop_removes_early_rows(self, feature_df):
+        featured = build_features(feature_df)
+        result = build_lookback_features(featured, lookback=10, fill_method="drop")
+        # drop: first 10 rows removed (+ 2 from base NaN in pf_acceleration)
         assert len(result) == 48
+
+    def test_lookback_zero_skips_lag_creation(self, feature_df):
+        featured = build_features(feature_df)
+        result = build_lookback_features(featured, lookback=0)
+        # No lag columns should be created
+        lag_cols = [c for c in result.columns if "_lag" in c]
+        assert len(lag_cols) == 0
+        assert len(result) == 60
 
     def test_clean_features_removes_inf_nan(self, feature_df):
         result = build_features(feature_df)

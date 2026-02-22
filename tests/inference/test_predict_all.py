@@ -302,8 +302,14 @@ class TestRunBatchPredict:
             run_batch_predict(["kr", "us"], model_type="gbm", threshold=0.5)
 
             assert mock_predict.call_count == 2
-            mock_predict.assert_any_call(market="kr", model_type="gbm", threshold=0.5)
-            mock_predict.assert_any_call(market="us", model_type="gbm", threshold=0.5)
+            mock_predict.assert_any_call(
+                market="kr", model_type="gbm", threshold=0.5,
+                label_config=None, model_config=None,
+            )
+            mock_predict.assert_any_call(
+                market="us", model_type="gbm", threshold=0.5,
+                label_config=None, model_config=None,
+            )
 
     def test_error_logged_not_raised(self):
         from run_pipeline import run_batch_predict
@@ -320,7 +326,8 @@ class TestRunBatchPredict:
             run_batch_predict(["kr"], model_type="gbm", threshold=0.3)
 
             mock_predict.assert_called_once_with(
-                market="kr", model_type="gbm", threshold=0.3
+                market="kr", model_type="gbm", threshold=0.3,
+                label_config=None, model_config=None,
             )
 
     def test_value_error_also_caught(self):

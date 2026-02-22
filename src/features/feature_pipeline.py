@@ -64,6 +64,7 @@ def build_features(
 def build_lookback_features(
     df: pd.DataFrame,
     lookback: int = LOOKBACK_WINDOW,
+    fill_method: str = "0fill",
 ) -> pd.DataFrame:
     """Create lagged feature matrix using lookback window.
 
@@ -72,12 +73,18 @@ def build_lookback_features(
 
     Args:
         df: DataFrame with feature columns (output from build_features).
-        lookback: Number of past bars to include.
+        lookback: Number of past bars to include. If 0, skip lag creation.
+        fill_method: How to handle early bars with insufficient history.
+            "drop" — drop rows with NaN lags (M1 style).
+            "0fill" — fill NaN lags with 0 (M2/M3/M4 style).
 
     Returns:
-        DataFrame with lookback features (flattened). Rows with insufficient
-        history are dropped.
+        DataFrame with lookback features (flattened).
     """
+    if lookback == 0:
+        logger.debug("lookback=0: skipping lag feature creation")
+        return df
+
     feature_cols = get_feature_columns(df)
 
     if not feature_cols:
@@ -94,14 +101,16 @@ def build_lookback_features(
     }
     result = pd.concat([result, pd.DataFrame(lag_cols, index=df.index)], axis=1)
 
-    # Drop rows without full lookback history
-    # Within each day, the first `lookback` bars won't have full history
-    initial_len = len(result)
-    result = result.dropna(subset=[f"{feature_cols[0]}_lag{lookback}"])
-    dropped = initial_len - len(result)
-
-    if dropped > 0:
-        logger.debug(f"Dropped {dropped} rows with insufficient lookback history")
+    if fill_method == "drop":
+        # Drop rows where the furthest lag is NaN (first `lookback` rows)
+        sentinel_col = f"{feature_cols[0]}_lag{lookback}"
+        result = result.dropna(subset=[sentinel_col])
+        logger.debug(f"Dropped early bars with incomplete lookback (fill_method=drop)")
+    else:
+        # Fill NaN in lag features with 0 (early bars without full lookback history)
+        lag_feature_cols = [c for c in result.columns if "_lag" in c]
+        result[lag_feature_cols] = result[lag_feature_cols].fillna(0)
+        logger.debug(f"Filled {len(lag_feature_cols)} lag feature columns with 0 for early bars")
 
     return result
 

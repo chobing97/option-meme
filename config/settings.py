@@ -36,9 +36,9 @@ TV_BACKOFF_BASE = 2  # exponential backoff base
 
 # ── Labeling ──────────────────────────────────────────
 # Peak/trough detection via scipy.signal.find_peaks
-PEAK_PROMINENCE_PCT = 0.003   # 0.3% of open price
+PEAK_PROMINENCE_PCT = 0.002   # 0.2% of open price
 PEAK_DISTANCE = 5             # minimum 5 bars between peaks
-PEAK_WIDTH = 3                # minimum width of peak
+PEAK_WIDTH = 1                # minimum width of peak
 
 # Labels: 0=neither, 1=peak, 2=trough
 LABEL_NEITHER = 0
@@ -46,7 +46,7 @@ LABEL_PEAK = 1
 LABEL_TROUGH = 2
 
 # ── Features ──────────────────────────────────────────
-LOOKBACK_WINDOW = 10  # bars of history as input
+LOOKBACK_WINDOW = 5   # bars of history as input
 RETURN_WINDOWS = [1, 2, 3, 5, 10]  # for multi-period returns
 
 # Technical indicator periods

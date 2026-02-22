@@ -16,6 +16,8 @@ Options:
     --full                                        # Full re-collection (instead of incremental)
     --threshold 0.5                               # Prediction threshold (predict/trade)
     --date 2026-02-20                             # Target date (predict/trade)
+    --label-config L1|L2|all                      # Label variant (default: all)
+    --model-config M1|M2|M3|M4|all                # Model variant (default: all)
 """
 
 import argparse
@@ -28,6 +30,24 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import DATA_DIR, LABELED_DIR, PREDICTIONS_DIR, PROCESSED_DIR
+from config.variants import LABEL_CONFIGS, MODEL_CONFIGS
+
+
+# ── Variant helpers ──────────────────────────────────────
+
+
+def _resolve_label_configs(label_config_arg: str) -> list[str]:
+    """Resolve --label-config argument to list of label config keys."""
+    if label_config_arg == "all":
+        return list(LABEL_CONFIGS.keys())
+    return [label_config_arg]
+
+
+def _resolve_model_configs(model_config_arg: str) -> list[str]:
+    """Resolve --model-config argument to list of model config keys."""
+    if model_config_arg == "all":
+        return list(MODEL_CONFIGS.keys())
+    return [model_config_arg]
 
 
 # ── Market helpers ───────────────────────────────────────
@@ -139,29 +159,42 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
 # ── Labeler ──────────────────────────────────────────────
 
 
-def run_labeler(markets: list[str]) -> None:
-    """Run labeling for all symbols in specified markets."""
+def run_labeler(markets: list[str], label_config: str = "L1") -> None:
+    """Run labeling for all symbols in specified markets with given label config."""
     from src.labeler.label_generator import (
         apply_manual_overrides,
         label_all_symbols,
         label_statistics,
-        save_labeled,
     )
 
+    lcfg = LABEL_CONFIGS[label_config]
+
     for market in markets:
-        logger.info(f"=== Labeling {market} ===")
-        labeled_df = label_all_symbols(market, save=True)
+        logger.info(f"=== Labeling {market} [{label_config}] ===")
+        labeled_df = label_all_symbols(
+            market,
+            prominence_pct=lcfg["prominence_pct"],
+            distance=lcfg["distance"],
+            width=lcfg["width"],
+            save=False,
+        )
 
         if labeled_df.empty:
             logger.warning(f"No data to label for {market}")
             continue
 
-        # 수작업 레이블 오버라이드 적용 후 재저장
+        # 수작업 레이블 오버라이드 적용
         labeled_df = apply_manual_overrides(labeled_df, market)
-        save_labeled(labeled_df, market)
+
+        # Save to variant subdirectory
+        output_dir = LABELED_DIR / label_config
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{market}_labeled.parquet"
+        labeled_df.to_parquet(output_path, index=False, compression="snappy")
+        logger.info(f"Saved labeled data to {output_path} ({len(labeled_df)} rows)")
 
         stats = label_statistics(labeled_df)
-        logger.info(f"Label statistics for {market}:")
+        logger.info(f"Label statistics for {market} [{label_config}]:")
         for k, v in stats.items():
             logger.info(f"  {k}: {v}")
 
@@ -169,31 +202,38 @@ def run_labeler(markets: list[str]) -> None:
 # ── Features ─────────────────────────────────────────────
 
 
-def run_features(markets: list[str]) -> None:
-    """Build features from labeled data."""
+def run_features(markets: list[str], label_config: str = "L1", model_config: str = "M1") -> None:
+    """Build features from labeled data with given variant configs."""
     from src.features.feature_pipeline import (
         build_features,
         build_lookback_features,
         clean_features,
         get_feature_columns,
     )
-    from src.labeler.label_generator import load_labeled
 
-    featured_dir = PROCESSED_DIR / "featured"
+    mcfg = MODEL_CONFIGS[model_config]
+
+    featured_dir = PROCESSED_DIR / "featured" / label_config / model_config
     featured_dir.mkdir(parents=True, exist_ok=True)
 
     for market in markets:
-        logger.info(f"=== Building features for {market} ===")
-        df = load_labeled(market)
+        logger.info(f"=== Building features for {market} [{label_config}/{model_config}] ===")
 
-        if df.empty:
-            logger.warning(f"No labeled data for {market}, skipping")
+        # Load labeled data from variant subdirectory
+        labeled_path = LABELED_DIR / label_config / f"{market}_labeled.parquet"
+        if not labeled_path.exists():
+            logger.warning(f"No labeled data at {labeled_path}, skipping")
             continue
 
+        df = pd.read_parquet(labeled_path)
         logger.info(f"Loaded {len(df)} labeled bars")
 
         df = build_features(df)
-        df = build_lookback_features(df)
+        df = build_lookback_features(
+            df,
+            lookback=mcfg["gbm_lookback"],
+            fill_method=mcfg["fill_method"],
+        )
         df = clean_features(df)
 
         feature_cols = get_feature_columns(df)
@@ -207,19 +247,26 @@ def run_features(markets: list[str]) -> None:
 # ── Model ────────────────────────────────────────────────
 
 
-def run_model(markets: list[str], model_type: str = "all") -> None:
-    """Train and evaluate models."""
+def run_model(
+    markets: list[str],
+    model_type: str = "all",
+    label_config: str = "L1",
+    model_config: str = "M1",
+) -> None:
+    """Train and evaluate models for a specific variant."""
     from src.features.feature_pipeline import get_all_feature_columns
     from src.model.dataset import SplitResult, prepare_xy, time_based_split
     from src.model.evaluate import full_evaluation
 
-    models_dir = DATA_DIR / "models"
+    mcfg = MODEL_CONFIGS[model_config]
+
+    models_dir = DATA_DIR / "models" / label_config / model_config
     models_dir.mkdir(parents=True, exist_ok=True)
 
     for market in markets:
-        logger.info(f"=== Training models for {market} ===")
+        logger.info(f"=== Training models for {market} [{label_config}/{model_config}] ===")
 
-        featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
+        featured_path = PROCESSED_DIR / "featured" / label_config / model_config / f"{market}_featured.parquet"
         if not featured_path.exists():
             logger.warning(f"No featured data at {featured_path}, skipping")
             continue
@@ -262,6 +309,8 @@ def run_model(markets: list[str], model_type: str = "all") -> None:
                 _train_lstm_model(
                     split, target_label, label_name, feature_cols,
                     market, models_dir,
+                    lstm_lookback=mcfg["lstm_lookback"],
+                    fill_method=mcfg["fill_method"],
                 )
 
         # Full evaluation with LightGBM predictions (if available)
@@ -294,13 +343,21 @@ def _train_lgb_model(
 
 def _train_lstm_model(
     split, target_label, label_name, feature_cols, market, models_dir,
+    lstm_lookback=None, fill_method="drop",
 ):
     """Train and save an LSTM model."""
+    from config.settings import LOOKBACK_WINDOW
     from src.model.train_lstm import save_model as save_lstm
     from src.model.train_lstm import train_lstm
 
-    logger.info(f"Training LSTM for {label_name}...")
-    model, metrics = train_lstm(split, target_label, feature_cols)
+    if lstm_lookback is None:
+        lstm_lookback = LOOKBACK_WINDOW
+
+    logger.info(f"Training LSTM for {label_name} (lookback={lstm_lookback}, fill={fill_method})...")
+    model, metrics = train_lstm(
+        split, target_label, feature_cols,
+        lookback=lstm_lookback,
+    )
 
     model_path = models_dir / f"lstm_{market}_{label_name}.pt"
     save_lstm(model, model_path)
@@ -343,17 +400,21 @@ def run_batch_predict(
     markets: list[str],
     model_type: str = "gbm",
     threshold: float = 0.5,
+    label_config: str | None = None,
+    model_config: str | None = None,
 ) -> None:
     """Run batch prediction for all symbols/dates in featured data."""
     from src.inference.predict import predict_all
 
     for market in markets:
-        logger.info(f"=== Batch predicting {market} ===")
+        logger.info(f"=== Batch predicting {market} [{label_config}/{model_config}] ===")
         try:
             result = predict_all(
                 market=market,
                 model_type=model_type,
                 threshold=threshold,
+                label_config=label_config,
+                model_config=model_config,
             )
             n_peaks = int((result["label"] == 1).sum())
             n_troughs = int((result["label"] == 2).sum())
@@ -374,13 +435,15 @@ def run_predict(
     model_type: str = "gbm",
     threshold: float = 0.5,
     date: str | None = None,
+    label_config: str | None = None,
+    model_config: str | None = None,
 ) -> None:
     """Run inference for specified symbols."""
     from src.inference.predict import predict_symbol
 
     for market in markets:
         for symbol in symbols:
-            logger.info(f"=== Predicting {market}/{symbol} ===")
+            logger.info(f"=== Predicting {market}/{symbol} [{label_config}/{model_config}] ===")
             try:
                 result = predict_symbol(
                     market=market,
@@ -388,6 +451,8 @@ def run_predict(
                     model_type=model_type,
                     threshold=threshold,
                     date=date,
+                    label_config=label_config,
+                    model_config=model_config,
                 )
                 logger.info(
                     f"Done: {result['date']}, "
@@ -476,6 +541,10 @@ examples:
   ./run.sh trade --market kr --symbol 5930 --model gbm --quantity 2
   ./run.sh trade --market kr --symbol 5930 --date 2026-02-19
   ./run.sh batch_predict --market all --model gbm --threshold 0.3
+  ./run.sh labeler --label-config L2
+  ./run.sh features --label-config L2 --model-config M3
+  ./run.sh model --label-config L2 --model-config M3
+  ./run.sh batch_predict --label-config all --model-config all
 """,
     )
 
@@ -527,6 +596,18 @@ examples:
         default=1,
         help="Number of option contracts per trade (trade only, default: 1)",
     )
+    parser.add_argument(
+        "--label-config",
+        choices=list(LABEL_CONFIGS.keys()) + ["all"],
+        default="all",
+        help="Label configuration variant (default: all)",
+    )
+    parser.add_argument(
+        "--model-config",
+        choices=list(MODEL_CONFIGS.keys()) + ["all"],
+        default="all",
+        help="Model configuration variant (default: all)",
+    )
 
     return parser
 
@@ -537,8 +618,13 @@ def main() -> None:
 
     markets = _resolve_markets(args.market)
     stage = args.stage
+    label_configs = _resolve_label_configs(args.label_config)
+    model_configs = _resolve_model_configs(args.model_config)
 
-    logger.info(f"Pipeline start: stage={stage}, markets={markets}")
+    logger.info(
+        f"Pipeline start: stage={stage}, markets={markets}, "
+        f"label_configs={label_configs}, model_configs={model_configs}"
+    )
     start_time = datetime.now()
 
     try:
@@ -546,31 +632,49 @@ def main() -> None:
             run_collector(markets, full=args.full, symbols=args.symbol)
 
         if stage in ("labeler", "all"):
-            run_labeler(markets)
+            for lc in label_configs:
+                run_labeler(markets, label_config=lc)
 
         if stage in ("features", "all"):
-            run_features(markets)
+            for lc in label_configs:
+                for mc in model_configs:
+                    run_features(markets, label_config=lc, model_config=mc)
 
         if stage in ("model", "all"):
-            run_model(markets, model_type=args.model_type)
+            for lc in label_configs:
+                for mc in model_configs:
+                    run_model(
+                        markets,
+                        model_type=args.model_type,
+                        label_config=lc,
+                        model_config=mc,
+                    )
 
         if stage == "batch_predict":
-            run_batch_predict(
-                markets,
-                model_type=args.model_type,
-                threshold=args.threshold,
-            )
+            for lc in label_configs:
+                for mc in model_configs:
+                    run_batch_predict(
+                        markets,
+                        model_type=args.model_type,
+                        threshold=args.threshold,
+                        label_config=lc,
+                        model_config=mc,
+                    )
 
         if stage == "predict":
             if not args.symbol:
                 parser.error("predict stage requires --symbol")
-            run_predict(
-                markets,
-                symbols=args.symbol,
-                model_type=args.model_type,
-                threshold=args.threshold,
-                date=args.date,
-            )
+            for lc in label_configs:
+                for mc in model_configs:
+                    run_predict(
+                        markets,
+                        symbols=args.symbol,
+                        model_type=args.model_type,
+                        threshold=args.threshold,
+                        date=args.date,
+                        label_config=lc,
+                        model_config=mc,
+                    )
 
         if stage == "trade":
             if not args.symbol:
