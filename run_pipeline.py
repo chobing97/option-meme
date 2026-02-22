@@ -235,6 +235,14 @@ def run_model(markets: list[str], model_type: str = "all") -> None:
             f"Split: train={len(split.train)}, val={len(split.val)}, test={len(split.test)}"
         )
 
+        # Save train/val/test splits for reproducibility
+        splits_dir = models_dir / "splits"
+        splits_dir.mkdir(parents=True, exist_ok=True)
+        for split_name, split_df in [("train", split.train), ("val", split.val), ("test", split.test)]:
+            path = splits_dir / f"{market}_{split_name}.parquet"
+            split_df.to_parquet(path, index=False, compression="snappy")
+        logger.info(f"Saved train/val/test splits to {splits_dir}")
+
         # Track probabilities for full_evaluation
         peak_proba_test = None
         trough_proba_test = None
