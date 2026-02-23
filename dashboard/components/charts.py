@@ -24,14 +24,85 @@ def _trading_rangebreaks(df: pd.DataFrame) -> list[dict]:
     return breaks
 
 
-def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
-    """Create candlestick chart with volume subplot."""
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.75, 0.25],
-    )
+def _vol_outlier_cap(df: pd.DataFrame) -> tuple[float, bool]:
+    """Return (cap, has_outliers). Outlier if top values average > 2× the 98th percentile."""
+    vol = df["volume"]
+    cap = vol.quantile(0.95)
+    above = vol[vol > cap]
+    has_outliers = not above.empty and above.mean() > cap * 2
+    return cap, has_outliers
 
+
+def _vol_colors(df: pd.DataFrame) -> list[str]:
+    """Red for down bars, green for up bars."""
+    return ["#ef5350" if c < o else "#26a69a" for c, o in zip(df["close"], df["open"])]
+
+
+def _add_break_indicator(fig: go.Figure, row_heights: list[float], vertical_spacing: float, upper_row_idx: int) -> None:
+    """Add diagonal '//' marks at the gap between upper_row_idx and upper_row_idx+1 (0-indexed)."""
+    n = len(row_heights)
+    total_h = sum(row_heights)
+    usable = 1.0 - (n - 1) * vertical_spacing
+
+    y = 0.0
+    for i in range(n - 1, upper_row_idx, -1):
+        y += row_heights[i] / total_h * usable
+        if i > upper_row_idx + 1:
+            y += vertical_spacing
+    y_mid = y + vertical_spacing / 2
+
+    for x in [0.02, 0.045]:
+        fig.add_shape(
+            type="line",
+            x0=x - 0.008, x1=x + 0.008,
+            y0=y_mid - 0.007, y1=y_mid + 0.007,
+            xref="paper", yref="paper",
+            line=dict(color="#aaa", width=1.5),
+        )
+
+
+def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
+    """Create candlestick chart with volume subplot (broken axis for outliers)."""
+    vol = df["volume"]
+    cap, has_outliers = _vol_outlier_cap(df)
+    colors = _vol_colors(df)
+
+    if has_outliers:
+        fig = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            vertical_spacing=0, row_heights=[0.66, 0.10, 0.20],
+        )
+        # Glue vol rows (spacing=0), then add gap only between price and vol
+        price_d = list(fig.layout.yaxis.domain)
+        fig.update_layout(yaxis=dict(domain=[price_d[0] + 0.03, price_d[1]]))
+        # Row 2: outlier range (log scale, bottom = cap)
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol, marker_color=colors, opacity=0.6, showlegend=False),
+            row=2, col=1,
+        )
+        fig.update_yaxes(
+            type="log", range=[np.log10(cap), np.log10(vol.max() * 1.1)],
+            dtick=1, minor=dict(dtick="D1"),
+            row=2, col=1,
+        )
+        # Row 3: normal range (top = cap)
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol.clip(upper=cap), marker_color=colors, name="Volume", opacity=0.6),
+            row=3, col=1,
+        )
+        fig.update_yaxes(range=[0, cap * 1.05], title_text="Volume", row=3, col=1)
+    else:
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            vertical_spacing=0.03, row_heights=[0.75, 0.25],
+        )
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol, marker_color=colors, name="Volume", opacity=0.6),
+            row=2, col=1,
+        )
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
+
+    # Price always row 1
     fig.add_trace(
         go.Candlestick(
             x=df["datetime"],
@@ -40,12 +111,6 @@ def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
             name="OHLC",
         ),
         row=1, col=1,
-    )
-
-    colors = ["#ef5350" if c < o else "#26a69a" for c, o in zip(df["close"], df["open"])]
-    fig.add_trace(
-        go.Bar(x=df["datetime"], y=df["volume"], marker_color=colors, name="Volume", opacity=0.6),
-        row=2, col=1,
     )
 
     fig.update_layout(
@@ -57,7 +122,6 @@ def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
     )
     fig.update_xaxes(rangebreaks=_trading_rangebreaks(df))
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
     return fig
 
 
@@ -151,11 +215,30 @@ def make_editable_candlestick(df: pd.DataFrame, title: str = "Labels (click to e
 
 def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") -> go.Figure:
     """Candlestick with peak/trough markers and probability subplot."""
-    fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.55, 0.25, 0.20],
-    )
+    vol = df["volume"]
+    cap, has_outliers = _vol_outlier_cap(df)
+    colors = _vol_colors(df)
+
+    if has_outliers:
+        fig = make_subplots(
+            rows=4, cols=1, shared_xaxes=True,
+            vertical_spacing=0,
+            row_heights=[0.50, 0.07, 0.18, 0.20],
+        )
+        vol_upper, vol_lower, prob_row = 2, 3, 4
+        # Glue vol rows (spacing=0), then add gaps around vol block
+        price_d = list(fig.layout.yaxis.domain)
+        prob_d = list(fig.layout.yaxis4.domain)
+        fig.update_layout(
+            yaxis=dict(domain=[price_d[0] + 0.03, price_d[1]]),
+            yaxis4=dict(domain=[prob_d[0], prob_d[1] - 0.03]),
+        )
+    else:
+        fig = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            vertical_spacing=0.03, row_heights=[0.55, 0.25, 0.20],
+        )
+        vol_upper, vol_lower, prob_row = None, 2, 3
 
     # Row 1: Candlestick
     fig.add_trace(
@@ -191,14 +274,30 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
             row=1, col=1,
         )
 
-    # Row 2: Volume
-    colors = ["#ef5350" if c < o else "#26a69a" for c, o in zip(df["close"], df["open"])]
-    fig.add_trace(
-        go.Bar(x=df["datetime"], y=df["volume"], marker_color=colors, name="Volume", opacity=0.6),
-        row=2, col=1,
-    )
+    # Volume
+    if has_outliers:
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol, marker_color=colors, opacity=0.6, showlegend=False),
+            row=vol_upper, col=1,
+        )
+        fig.update_yaxes(
+            type="log", range=[np.log10(cap), np.log10(vol.max() * 1.1)],
+            dtick=1, minor=dict(dtick="D1"),
+            row=vol_upper, col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol.clip(upper=cap), marker_color=colors, name="Volume", opacity=0.6),
+            row=vol_lower, col=1,
+        )
+        fig.update_yaxes(range=[0, cap * 1.05], title_text="Volume", row=vol_lower, col=1)
+    else:
+        fig.add_trace(
+            go.Bar(x=df["datetime"], y=vol, marker_color=colors, name="Volume", opacity=0.6),
+            row=vol_lower, col=1,
+        )
+        fig.update_yaxes(title_text="Volume", row=vol_lower, col=1)
 
-    # Row 3: Probabilities
+    # Probabilities
     if "peak_prob" in df.columns:
         fig.add_trace(
             go.Scatter(
@@ -206,7 +305,7 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
                 mode="lines", name="Peak prob",
                 line=dict(color="#ef5350", width=1.5),
             ),
-            row=3, col=1,
+            row=prob_row, col=1,
         )
     if "trough_prob" in df.columns:
         fig.add_trace(
@@ -215,10 +314,9 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
                 mode="lines", name="Trough prob",
                 line=dict(color="#26a69a", width=1.5),
             ),
-            row=3, col=1,
+            row=prob_row, col=1,
         )
-    # Threshold line
-    fig.add_hline(y=0.5, line_dash="dash", line_color="#bdbdbd", row=3, col=1)
+    fig.add_hline(y=0.5, line_dash="dash", line_color="#bdbdbd", row=prob_row, col=1)
 
     fig.update_layout(
         title=title,
@@ -229,8 +327,7 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
     )
     fig.update_xaxes(rangebreaks=_trading_rangebreaks(df))
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
-    fig.update_yaxes(title_text="Prob", row=3, col=1)
+    fig.update_yaxes(title_text="Prob", row=prob_row, col=1)
     return fig
 
 
