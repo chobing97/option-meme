@@ -38,29 +38,6 @@ def _vol_colors(df: pd.DataFrame) -> list[str]:
     return ["#ef5350" if c < o else "#26a69a" for c, o in zip(df["close"], df["open"])]
 
 
-def _add_break_indicator(fig: go.Figure, row_heights: list[float], vertical_spacing: float, upper_row_idx: int) -> None:
-    """Add diagonal '//' marks at the gap between upper_row_idx and upper_row_idx+1 (0-indexed)."""
-    n = len(row_heights)
-    total_h = sum(row_heights)
-    usable = 1.0 - (n - 1) * vertical_spacing
-
-    y = 0.0
-    for i in range(n - 1, upper_row_idx, -1):
-        y += row_heights[i] / total_h * usable
-        if i > upper_row_idx + 1:
-            y += vertical_spacing
-    y_mid = y + vertical_spacing / 2
-
-    for x in [0.02, 0.045]:
-        fig.add_shape(
-            type="line",
-            x0=x - 0.008, x1=x + 0.008,
-            y0=y_mid - 0.007, y1=y_mid + 0.007,
-            xref="paper", yref="paper",
-            line=dict(color="#aaa", width=1.5),
-        )
-
-
 def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
     """Create candlestick chart with volume subplot (broken axis for outliers)."""
     vol = df["volume"]
