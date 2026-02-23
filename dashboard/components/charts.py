@@ -6,6 +6,24 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
+def _trading_rangebreaks(df: pd.DataFrame) -> list[dict]:
+    """Detect actual gaps in datetime and return rangebreaks to hide them."""
+    if "datetime" not in df.columns or len(df) < 2:
+        return []
+    dt = df["datetime"].sort_values().reset_index(drop=True)
+    diffs_sec = dt.diff().dt.total_seconds()
+    median_sec = diffs_sec.median()
+
+    gap_indices = diffs_sec[diffs_sec > median_sec * 2].index
+    offset = pd.Timedelta(seconds=median_sec)
+    breaks = []
+    for i in gap_indices:
+        gap_start = dt.iloc[i - 1] + offset
+        gap_ms = (diffs_sec.iloc[i] - median_sec) * 1000
+        breaks.append(dict(values=[str(gap_start)], dvalue=gap_ms))
+    return breaks
+
+
 def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
     """Create candlestick chart with volume subplot."""
     fig = make_subplots(
@@ -37,6 +55,7 @@ def make_candlestick(df: pd.DataFrame, title: str = "OHLCV") -> go.Figure:
         margin=dict(l=40, r=20, t=40, b=20),
         showlegend=False,
     )
+    fig.update_xaxes(rangebreaks=_trading_rangebreaks(df))
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     return fig
@@ -208,6 +227,7 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
         margin=dict(l=40, r=20, t=40, b=20),
         showlegend=True,
     )
+    fig.update_xaxes(rangebreaks=_trading_rangebreaks(df))
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     fig.update_yaxes(title_text="Prob", row=3, col=1)
