@@ -16,6 +16,7 @@ Options:
     --full                                        # Full re-collection (instead of incremental)
     --threshold 0.5                               # Prediction threshold (predict/trade)
     --date 2026-02-20                             # Target date (predict/trade)
+    --optimize                                    # Optuna HP search for GBM (model only)
     --label-config L1|L2|all                      # Label variant (default: all)
     --model-config M1|M2|M3|M4|all                # Model variant (default: all)
 """
@@ -26,11 +27,16 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import mlflow
 import pandas as pd
 from loguru import logger
 
 from config.settings import DATA_DIR, LABELED_DIR, PREDICTIONS_DIR, PROCESSED_DIR
 from config.variants import LABEL_CONFIGS, MODEL_CONFIGS
+
+# MLflow tracking URI (local file store)
+MLFLOW_TRACKING_URI = str(DATA_DIR / "mlruns")
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 
 # ── Variant helpers ──────────────────────────────────────
@@ -261,13 +267,15 @@ def run_model(
     model_type: str = "all",
     label_config: str = "L1",
     model_config: str = "M1",
+    optimize: bool = False,
 ) -> None:
     """Train and evaluate models for a specific variant."""
-    from src.features.feature_pipeline import get_all_feature_columns
+    from src.features.feature_pipeline import get_all_feature_columns, get_base_feature_columns
     from src.model.dataset import SplitResult, prepare_xy, time_based_split
     from src.model.evaluate import full_evaluation
 
     mcfg = MODEL_CONFIGS[model_config]
+    lcfg = LABEL_CONFIGS[label_config]
 
     models_dir = DATA_DIR / "models" / label_config / model_config
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -284,7 +292,8 @@ def run_model(
         logger.info(f"Loaded {len(df)} featured bars")
 
         feature_cols = get_all_feature_columns(df)
-        logger.info(f"Feature columns: {len(feature_cols)}")
+        lstm_feature_cols = get_base_feature_columns(df)
+        logger.info(f"Feature columns: {len(feature_cols)} (GBM), {len(lstm_feature_cols)} (LSTM)")
 
         split = time_based_split(df)
         logger.info(
@@ -299,43 +308,82 @@ def run_model(
             split_df.to_parquet(path, index=False, compression="snappy")
         logger.info(f"Saved train/val/test splits to {splits_dir}")
 
-        # Track probabilities for full_evaluation
-        peak_proba_test = None
-        trough_proba_test = None
+        mlflow.set_experiment(f"option-meme/{market}")
+        with mlflow.start_run(run_name=f"{label_config}_{model_config}"):
+            mlflow.log_params({
+                "market": market,
+                "label_config": label_config,
+                "model_config": model_config,
+                "model_type": model_type,
+                # label config values
+                "prominence_pct": lcfg["prominence_pct"],
+                "label_distance": lcfg["distance"],
+                "label_width": lcfg["width"],
+                # model config values
+                "gbm_lookback": mcfg["gbm_lookback"],
+                "lstm_lookback": mcfg["lstm_lookback"],
+                "fill_method": mcfg["fill_method"],
+            })
 
-        for target_label, label_name in [(1, "peak"), (2, "trough")]:
-            logger.info(f"--- Target: {label_name} (label={target_label}) ---")
+            for target_label, label_name in [(1, "peak"), (2, "trough")]:
+                logger.info(f"--- Target: {label_name} (label={target_label}) ---")
 
-            # LightGBM
+                # LightGBM
+                if model_type in ("gbm", "all"):
+                    _train_lgb_model(
+                        split, target_label, label_name, feature_cols,
+                        market, models_dir, optimize=optimize,
+                    )
+
+                # LSTM (base features only — let LSTM learn temporal patterns itself)
+                if model_type in ("lstm", "all"):
+                    _train_lstm_model(
+                        split, target_label, label_name, lstm_feature_cols,
+                        market, models_dir,
+                        lstm_lookback=mcfg["lstm_lookback"],
+                        fill_method=mcfg["fill_method"],
+                    )
+
+            # Full evaluation with LightGBM predictions (if available)
             if model_type in ("gbm", "all"):
-                _train_lgb_model(
-                    split, target_label, label_name, feature_cols,
-                    market, models_dir,
-                )
-
-            # LSTM
-            if model_type in ("lstm", "all"):
-                _train_lstm_model(
-                    split, target_label, label_name, feature_cols,
-                    market, models_dir,
-                    lstm_lookback=mcfg["lstm_lookback"],
-                    fill_method=mcfg["fill_method"],
-                )
-
-        # Full evaluation with LightGBM predictions (if available)
-        if model_type in ("gbm", "all"):
-            _run_full_evaluation(split, feature_cols, market, models_dir)
+                _run_full_evaluation(split, feature_cols, market, models_dir)
 
 
 def _train_lgb_model(
     split, target_label, label_name, feature_cols, market, models_dir,
+    optimize: bool = False,
 ):
     """Train and save a LightGBM model."""
     from src.model.train_gbm import save_model as save_lgb
     from src.model.train_gbm import train_lgb
 
-    logger.info(f"Training LightGBM for {label_name}...")
-    model, metrics = train_lgb(split, target_label, feature_cols)
+    if optimize:
+        from src.model.train_gbm import optimize_lgb
+
+        logger.info(f"Optimizing LightGBM for {label_name} (Optuna)...")
+        model, metrics, best_params = optimize_lgb(
+            split, target_label, feature_cols, n_trials=50, timeout=3600,
+        )
+
+        # Save best params for reproducibility
+        params_path = models_dir / f"lgb_{market}_{label_name}_params.json"
+        params_path.write_text(json.dumps(best_params, indent=2))
+        logger.info(f"Best params saved to {params_path}")
+        lgb_params = best_params
+    else:
+        # Use saved Optuna params if available, otherwise defaults
+        params_path = models_dir / f"lgb_{market}_{label_name}_params.json"
+        if params_path.exists():
+            from config.settings import LGB_PARAMS
+            saved_params = json.loads(params_path.read_text())
+            lgb_params = {**LGB_PARAMS, **saved_params}
+            logger.info(f"Training LightGBM for {label_name} (using saved Optuna params)...")
+            model, metrics = train_lgb(split, target_label, feature_cols, params=lgb_params)
+        else:
+            from config.settings import LGB_PARAMS
+            lgb_params = LGB_PARAMS
+            logger.info(f"Training LightGBM for {label_name}...")
+            model, metrics = train_lgb(split, target_label, feature_cols)
 
     model_path = models_dir / f"lgb_{market}_{label_name}.txt"
     save_lgb(model, model_path)
@@ -349,13 +397,41 @@ def _train_lgb_model(
         for name, imp in metrics["top_features"][:10]:
             logger.info(f"    {name}: {imp:.1f}")
 
+    with mlflow.start_run(run_name=f"gbm_{label_name}", nested=True):
+        # Log LGB hyperparameters (exclude internal/non-numeric options)
+        loggable_params = {
+            k: v for k, v in lgb_params.items()
+            if k not in ("verbosity", "num_threads") and not isinstance(v, (list, dict))
+        }
+        mlflow.log_params(loggable_params)
+
+        # Log metrics (exclude non-scalar fields)
+        scalar_metrics = {
+            k: v for k, v in metrics.items()
+            if k != "top_features" and isinstance(v, (int, float))
+        }
+        mlflow.log_metrics(scalar_metrics)
+
+        # Log model file
+        mlflow.log_artifact(str(model_path))
+        # Log params JSON if it exists (Optuna or pre-saved)
+        if params_path.exists():
+            mlflow.log_artifact(str(params_path))
+
 
 def _train_lstm_model(
     split, target_label, label_name, feature_cols, market, models_dir,
     lstm_lookback=None, fill_method="drop",
 ):
     """Train and save an LSTM model."""
-    from config.settings import LOOKBACK_WINDOW
+    from config.settings import (
+        LOOKBACK_WINDOW,
+        LSTM_BATCH_SIZE,
+        LSTM_DROPOUT,
+        LSTM_HIDDEN_SIZE,
+        LSTM_LR,
+        LSTM_NUM_LAYERS,
+    )
     from src.model.train_lstm import save_model as save_lstm
     from src.model.train_lstm import train_lstm
 
@@ -374,6 +450,25 @@ def _train_lstm_model(
     logger.info(f"LSTM {label_name} metrics:")
     for k, v in metrics.items():
         logger.info(f"  {k}: {v}")
+
+    with mlflow.start_run(run_name=f"lstm_{label_name}", nested=True):
+        mlflow.log_params({
+            "hidden_size": LSTM_HIDDEN_SIZE,
+            "num_layers": LSTM_NUM_LAYERS,
+            "dropout": LSTM_DROPOUT,
+            "lr": LSTM_LR,
+            "batch_size": LSTM_BATCH_SIZE,
+            "lookback": lstm_lookback,
+            "fill_method": fill_method,
+        })
+
+        scalar_metrics = {
+            k: v for k, v in metrics.items()
+            if isinstance(v, (int, float))
+        }
+        mlflow.log_metrics(scalar_metrics)
+
+        mlflow.log_artifact(str(model_path))
 
 
 def _run_full_evaluation(split, feature_cols, market, models_dir):
@@ -400,6 +495,283 @@ def _run_full_evaluation(split, feature_cols, market, models_dir):
 
     logger.info("=== Full Evaluation Report ===")
     logger.info(json.dumps(eval_results, indent=2, default=str))
+
+    with mlflow.start_run(run_name="evaluation", nested=True):
+        flat_metrics: dict[str, float] = {}
+
+        for side in ("peak", "trough"):
+            pr = eval_results.get(side, {}).get("pr_metrics", {})
+            if "pr_auc" in pr:
+                flat_metrics[f"{side}_pr_auc"] = pr["pr_auc"]
+            if "positive_rate" in pr:
+                flat_metrics[f"{side}_positive_rate"] = pr["positive_rate"]
+
+        bt = eval_results.get("backtest", {})
+        for key in ("n_trades", "total_return", "buy_hold_return", "win_rate",
+                    "avg_win", "avg_loss", "profit_factor", "max_drawdown", "sharpe_approx"):
+            if key in bt and isinstance(bt[key], (int, float)):
+                flat_metrics[f"backtest_{key}"] = bt[key]
+
+        if flat_metrics:
+            mlflow.log_metrics(flat_metrics)
+
+
+# ── Ensemble ─────────────────────────────────────────────
+
+
+def _get_lstm_aligned_rows(df: pd.DataFrame, lookback: int, fill_method: str) -> pd.DataFrame:
+    """Return the subset of df that LSTM TimeSeriesDataset includes.
+
+    For fill_method='0fill': all rows.
+    For fill_method='drop': skip first (lookback-1) rows per day.
+    """
+    if fill_method == "0fill":
+        return df
+    subsets = []
+    for _, day_df in df.groupby("date"):
+        subsets.append(day_df.iloc[lookback - 1:])
+    return pd.concat(subsets).reset_index(drop=True) if subsets else df.iloc[0:0]
+
+
+def run_ensemble(
+    markets: list[str],
+    label_config: str = "L2",
+    model_config: str = "M3",
+) -> None:
+    """Calibrate LSTM and find optimal GBM/LSTM ensemble weights.
+
+    Steps per market:
+      1. Load saved val/test splits from models_dir/splits/
+      2. For each label (peak, trough):
+         a. Run LSTM on val → fit IsotonicRegression calibrator → save
+         b. Run GBM on val (same row subset)
+         c. Grid search for optimal w_gbm that maximises val PR-AUC → save
+      3. Evaluate GBM-only vs Ensemble on test set → log to MLflow
+
+    Artifacts saved under data/models/{label_config}/{model_config}/:
+      - lstm_{market}_{label}_calibrator.joblib
+      - ensemble_{market}_weights.json
+
+    Note:
+      Ensemble is designed for US market. KR LSTM PR-AUC (0.13~0.33) is
+      too low to benefit from ensembling — the calibration step will still
+      run but the optimal weight will likely be ~1.0 (GBM-only).
+    """
+    import torch
+
+    from src.features.feature_pipeline import get_all_feature_columns, get_base_feature_columns
+    from src.model.calibrate import apply_calibration, fit_calibrator, save_calibrator
+    from src.model.dataset import TimeSeriesDataset, prepare_xy
+    from src.model.ensemble import (
+        ensemble_predict,
+        find_optimal_weight,
+        save_weights,
+    )
+    from src.model.evaluate import full_evaluation
+    from src.model.train_gbm import load_model as load_lgb
+    from src.model.train_lstm import load_model as load_lstm
+    from src.model.train_lstm import predict as lstm_predict
+
+    mcfg = MODEL_CONFIGS[model_config]
+    lstm_lookback = mcfg["lstm_lookback"]
+    fill_method = mcfg["fill_method"]
+
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+
+    for market in markets:
+        if market == "kr":
+            logger.warning(
+                "KR LSTM PR-AUC is typically 0.13~0.33 — ensemble may not improve over GBM alone. "
+                "Proceeding anyway; optimal weight will likely be w_gbm≈1.0."
+            )
+
+        models_dir = DATA_DIR / "models" / label_config / model_config
+        splits_dir = models_dir / "splits"
+
+        # ── Load splits ──────────────────────────────────────────────────────
+        val_path = splits_dir / f"{market}_val.parquet"
+        test_path = splits_dir / f"{market}_test.parquet"
+        if not val_path.exists() or not test_path.exists():
+            logger.error(
+                f"Splits not found at {splits_dir}. "
+                f"Run model first: ./run.sh model --market {market} "
+                f"--label-config {label_config} --model-config {model_config}"
+            )
+            continue
+
+        val_df = pd.read_parquet(val_path)
+        test_df = pd.read_parquet(test_path)
+        logger.info(
+            f"=== Ensemble [{market}] {label_config}/{model_config} | "
+            f"val={len(val_df)}, test={len(test_df)} rows ==="
+        )
+
+        # ── Feature columns ──────────────────────────────────────────────────
+        feature_cols = get_all_feature_columns(val_df)
+        lstm_feature_cols = get_base_feature_columns(val_df)
+        if not feature_cols or not lstm_feature_cols:
+            logger.error("No feature columns found in val split — skipping")
+            continue
+
+        # ── Load GBM models ──────────────────────────────────────────────────
+        peak_gbm_path = models_dir / f"lgb_{market}_peak.txt"
+        trough_gbm_path = models_dir / f"lgb_{market}_trough.txt"
+        if not peak_gbm_path.exists() or not trough_gbm_path.exists():
+            logger.error(f"GBM models not found in {models_dir}")
+            continue
+        peak_gbm = load_lgb(peak_gbm_path)
+        trough_gbm = load_lgb(trough_gbm_path)
+
+        # ── Load LSTM models ─────────────────────────────────────────────────
+        peak_lstm_path = models_dir / f"lstm_{market}_peak.pt"
+        trough_lstm_path = models_dir / f"lstm_{market}_trough.pt"
+        if not peak_lstm_path.exists() or not trough_lstm_path.exists():
+            logger.error(f"LSTM models not found in {models_dir}")
+            continue
+        n_lstm_features = len(lstm_feature_cols)
+        peak_lstm = load_lstm(peak_lstm_path, n_features=n_lstm_features)
+        trough_lstm = load_lstm(trough_lstm_path, n_features=n_lstm_features)
+
+        ensemble_weights = {}
+
+        mlflow.set_experiment(f"option-meme/{market}")
+        with mlflow.start_run(run_name=f"ensemble_{label_config}_{model_config}"):
+            mlflow.log_params({
+                "market": market,
+                "label_config": label_config,
+                "model_config": model_config,
+                "lstm_lookback": lstm_lookback,
+                "fill_method": fill_method,
+                "calibration": "isotonic",
+            })
+
+            for target_label, label_name in [(1, "peak"), (2, "trough")]:
+                logger.info(f"--- {label_name} ---")
+
+                # ── LSTM val predictions via TimeSeriesDataset ───────────────
+                # TimeSeriesDataset handles day-boundaries; labels are aligned.
+                lstm_model = peak_lstm if label_name == "peak" else trough_lstm
+                val_ds = TimeSeriesDataset(
+                    val_df, target_label=target_label, lookback=lstm_lookback,
+                    feature_cols=lstm_feature_cols, fill_method=fill_method,
+                )
+                lstm_val_proba = lstm_predict(lstm_model, val_ds, device=device)
+                lstm_val_labels = val_ds.targets  # already aligned
+
+                logger.info(
+                    f"LSTM val: n={len(lstm_val_proba)}, "
+                    f"pos_rate={lstm_val_labels.mean():.4f}, "
+                    f"pred_range=[{lstm_val_proba.min():.4f}, {lstm_val_proba.max():.4f}]"
+                )
+
+                # ── Fit calibrator on val set ────────────────────────────────
+                calibrator = fit_calibrator(lstm_val_proba, lstm_val_labels)
+                cal_path = models_dir / f"lstm_{market}_{label_name}_calibrator.joblib"
+                save_calibrator(calibrator, cal_path)
+                mlflow.log_artifact(str(cal_path))
+
+                # Calibrated val proba
+                lstm_val_cal = apply_calibration(calibrator, lstm_val_proba)
+
+                # ── GBM val predictions (same row subset as LSTM) ────────────
+                val_subset = _get_lstm_aligned_rows(val_df, lstm_lookback, fill_method)
+                X_val_sub, y_val_sub = prepare_xy(val_subset, target_label, feature_cols)
+                gbm_model = peak_gbm if label_name == "peak" else trough_gbm
+                gbm_val_proba = gbm_model.predict(X_val_sub)
+
+                # Align lengths (may differ by 1 at day boundaries in rare edge cases)
+                n_common = min(len(gbm_val_proba), len(lstm_val_cal))
+                gbm_val_proba = gbm_val_proba[:n_common]
+                lstm_val_cal_aligned = lstm_val_cal[:n_common]
+                y_val_labels = y_val_sub[:n_common]
+
+                # ── Find optimal weight ──────────────────────────────────────
+                best_w_gbm, best_val_auc = find_optimal_weight(
+                    gbm_val_proba, lstm_val_cal_aligned, y_val_labels,
+                )
+                ensemble_weights[label_name] = {
+                    "w_gbm": round(best_w_gbm, 4),
+                    "val_pr_auc": round(best_val_auc, 4),
+                }
+
+                with mlflow.start_run(run_name=f"ensemble_{label_name}", nested=True):
+                    mlflow.log_metrics({
+                        f"best_w_gbm": best_w_gbm,
+                        f"ensemble_val_pr_auc": best_val_auc,
+                    })
+
+                logger.info(
+                    f"{label_name}: w_gbm={best_w_gbm:.2f}, val PR-AUC={best_val_auc:.4f}"
+                )
+
+            # ── Save ensemble weights ────────────────────────────────────────
+            weights_path = models_dir / f"ensemble_{market}_weights.json"
+            save_weights(ensemble_weights, weights_path)
+            mlflow.log_artifact(str(weights_path))
+
+            # ── Test set evaluation: GBM-only vs Ensemble ────────────────────
+            logger.info("=== Test set evaluation: GBM-only vs Ensemble ===")
+
+            X_test, _ = prepare_xy(test_df, target_label=1, feature_cols=feature_cols)
+            gbm_peak_test = peak_gbm.predict(X_test)
+            X_test_t, _ = prepare_xy(test_df, target_label=2, feature_cols=feature_cols)
+            gbm_trough_test = trough_gbm.predict(X_test_t)
+
+            # LSTM test predictions (per label, calibrated)
+            from src.model.calibrate import load_calibrator
+
+            def _lstm_test_calibrated(lstm_model, label_name_key, target_lbl):
+                test_ds = TimeSeriesDataset(
+                    test_df, target_label=target_lbl, lookback=lstm_lookback,
+                    feature_cols=lstm_feature_cols, fill_method=fill_method,
+                )
+                raw_proba = lstm_predict(lstm_model, test_ds, device=device)
+                cal = load_calibrator(models_dir / f"lstm_{market}_{label_name_key}_calibrator.joblib")
+                cal_proba = apply_calibration(cal, raw_proba)
+                # Pad front to match test_df length (for fill_method='drop')
+                n_test = len(test_df)
+                if len(cal_proba) < n_test:
+                    cal_proba = np.concatenate([np.zeros(n_test - len(cal_proba)), cal_proba])
+                return cal_proba[:n_test]
+
+            lstm_peak_test_cal = _lstm_test_calibrated(peak_lstm, "peak", 1)
+            lstm_trough_test_cal = _lstm_test_calibrated(trough_lstm, "trough", 2)
+
+            w_peak = ensemble_weights["peak"]["w_gbm"]
+            w_trough = ensemble_weights["trough"]["w_gbm"]
+            ens_peak_test = ensemble_predict(gbm_peak_test, lstm_peak_test_cal, w_gbm=w_peak)
+            ens_trough_test = ensemble_predict(gbm_trough_test, lstm_trough_test_cal, w_gbm=w_trough)
+
+            gbm_eval = full_evaluation(test_df, gbm_peak_test, gbm_trough_test)
+            ens_eval = full_evaluation(test_df, ens_peak_test, ens_trough_test)
+
+            gbm_peak_auc = gbm_eval["peak"]["pr_metrics"]["pr_auc"]
+            gbm_trough_auc = gbm_eval["trough"]["pr_metrics"]["pr_auc"]
+            ens_peak_auc = ens_eval["peak"]["pr_metrics"]["pr_auc"]
+            ens_trough_auc = ens_eval["trough"]["pr_metrics"]["pr_auc"]
+
+            logger.info(
+                f"Test PR-AUC | GBM: peak={gbm_peak_auc:.4f}, trough={gbm_trough_auc:.4f} | "
+                f"Ensemble: peak={ens_peak_auc:.4f}, trough={ens_trough_auc:.4f}"
+            )
+            logger.info(
+                f"Delta      | peak={ens_peak_auc - gbm_peak_auc:+.4f}, "
+                f"trough={ens_trough_auc - gbm_trough_auc:+.4f}"
+            )
+
+            with mlflow.start_run(run_name="ensemble_evaluation", nested=True):
+                mlflow.log_metrics({
+                    "gbm_peak_test_pr_auc": gbm_peak_auc,
+                    "gbm_trough_test_pr_auc": gbm_trough_auc,
+                    "ensemble_peak_test_pr_auc": ens_peak_auc,
+                    "ensemble_trough_test_pr_auc": ens_trough_auc,
+                    "delta_peak": ens_peak_auc - gbm_peak_auc,
+                    "delta_trough": ens_trough_auc - gbm_trough_auc,
+                })
 
 
 # ── Batch Predict ────────────────────────────────────────
@@ -521,6 +893,7 @@ STAGES = {
     "labeler": "Peak/trough labeling",
     "features": "Feature engineering",
     "model": "Model training & evaluation",
+    "ensemble": "LSTM calibration + GBM/LSTM ensemble (US only)",
     "predict": "Inference on latest data",
     "batch_predict": "Batch prediction (all symbols → labeled parquet)",
     "trade": "Mock trading simulation",
@@ -606,6 +979,11 @@ examples:
         help="Number of option contracts per trade (trade only, default: 1)",
     )
     parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Run Optuna hyperparameter optimization for LightGBM (model stage only)",
+    )
+    parser.add_argument(
         "--label-config",
         choices=list(LABEL_CONFIGS.keys()) + ["all"],
         default="all",
@@ -657,7 +1035,13 @@ def main() -> None:
                         model_type=args.model_type,
                         label_config=lc,
                         model_config=mc,
+                        optimize=args.optimize,
                     )
+
+        if stage == "ensemble":
+            for lc in label_configs:
+                for mc in model_configs:
+                    run_ensemble(markets, label_config=lc, model_config=mc)
 
         if stage == "batch_predict":
             for lc in label_configs:
