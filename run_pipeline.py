@@ -945,10 +945,10 @@ examples:
     )
     parser.add_argument(
         "--model",
-        choices=["gbm", "lstm", "all"],
+        choices=["gbm", "lstm", "ensemble", "all"],
         default="all",
         dest="model_type",
-        help="Model type to train (default: all)",
+        help="Model type to train/predict (default: all)",
     )
     parser.add_argument(
         "--full",
