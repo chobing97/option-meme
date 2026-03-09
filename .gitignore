@@ -1,5 +1,6 @@
 # Data (large files)
 data/
+!data/mlruns/
 *.parquet
 *.db
 
@@ -37,3 +38,7 @@ Thumbs.db
 .env
 *.key
 credentials.*
+.kis_token.json
+
+# KIS API test scripts
+scripts/

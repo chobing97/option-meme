@@ -227,17 +227,19 @@ class TimeSeriesDataset(Dataset):
         if self.fill_method == "0fill":
             # Include all bars, zero-padding early ones
             for i in range(len(features)):
-                if i < self.lookback:
-                    pad = np.zeros((self.lookback - i, features.shape[1]), dtype=np.float32)
-                    seq = np.vstack([pad, features[:i]]) if i > 0 else pad
+                start = max(0, i - self.lookback + 1)
+                seq_data = features[start : i + 1]  # includes current bar
+                if len(seq_data) < self.lookback:
+                    pad = np.zeros((self.lookback - len(seq_data), features.shape[1]), dtype=np.float32)
+                    seq = np.vstack([pad, seq_data])
                 else:
-                    seq = features[i - self.lookback : i]
+                    seq = seq_data
                 self.sequences.append(seq)
                 self.targets.append(labels[i])
         else:
-            # Drop: skip first `lookback` bars per day
-            for i in range(self.lookback, len(features)):
-                seq = features[i - self.lookback : i]  # [lookback, n_features]
+            # Drop: skip first `lookback-1` bars per day
+            for i in range(self.lookback - 1, len(features)):
+                seq = features[i - self.lookback + 1 : i + 1]  # [lookback, n_features], includes current bar
                 self.sequences.append(seq)
                 self.targets.append(labels[i])
 

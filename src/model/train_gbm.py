@@ -126,6 +126,7 @@ def optimize_lgb(
             "is_unbalance": True,
             "verbosity": -1,
             "seed": RANDOM_SEED,
+            "feature_pre_filter": False,
             "num_leaves": trial.suggest_int("num_leaves", 15, 127),
             "max_depth": trial.suggest_int("max_depth", 3, 12),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),

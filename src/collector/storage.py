@@ -19,6 +19,7 @@ OHLCV_SCHEMA = pa.schema([
     ("low", pa.float64()),
     ("close", pa.float64()),
     ("volume", pa.int64()),
+    ("source", pa.string()),
 ])
 
 
@@ -36,6 +37,7 @@ def save_bars(
     df: pd.DataFrame,
     market: str,
     symbol: str,
+    source: str = "",
 ) -> dict[int, int]:
     """Save bars to yearly Parquet files with incremental merge.
 
@@ -45,6 +47,7 @@ def save_bars(
         df: DataFrame with datetime index and OHLCV columns
         market: 'kr' or 'us'
         symbol: Ticker symbol
+        source: Data source identifier (e.g. 'databento', 'yfinance', 'tvdatafeed')
 
     Returns:
         Dict of {year: bar_count} for saved files.
@@ -52,7 +55,7 @@ def save_bars(
     if df is None or df.empty:
         return {}
 
-    df = _normalize_df(df)
+    df = _normalize_df(df, source=source)
     results = {}
 
     for year, year_df in df.groupby(df["datetime"].dt.year):
@@ -112,7 +115,7 @@ def load_bars(
     return combined
 
 
-def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_df(df: pd.DataFrame, source: str = "") -> pd.DataFrame:
     """Normalize DataFrame to consistent format."""
     result = df.copy()
 
@@ -131,7 +134,13 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         if col not in result.columns:
             raise ValueError(f"Missing required column: {col}")
 
-    result = result[required].copy()
+    # source 컬럼: 파라미터 > 기존 컬럼 > 빈 문자열
+    if "source" not in result.columns:
+        result["source"] = source
+    elif source:
+        result["source"] = source
+
+    result = result[required + ["source"]].copy()
     result["volume"] = result["volume"].fillna(0).astype(int)
 
     return result
@@ -142,6 +151,9 @@ def _merge_with_existing(new_df: pd.DataFrame, path: Path) -> pd.DataFrame:
     if path.exists():
         try:
             existing = pd.read_parquet(path)
+            # 기존 파일에 source 컬럼이 없으면 추가 (하위 호환)
+            if "source" not in existing.columns:
+                existing["source"] = ""
             merged = pd.concat([existing, new_df], ignore_index=True)
         except Exception as e:
             logger.warning(f"Failed to read existing {path}, overwriting: {e}")

@@ -127,6 +127,24 @@ class CollectionTracker:
         )
         self._conn.commit()
 
+    def get_entries_for_symbol(self, symbol: str, market: str) -> list[dict]:
+        """Get all source entries for a symbol in a market."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT * FROM collection_log WHERE symbol=? AND market=? ORDER BY source",
+            (symbol, market),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def delete_entry(self, symbol: str, exchange: str, source: str) -> None:
+        """Delete a collection record."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "DELETE FROM collection_log WHERE symbol=? AND exchange=? AND source=?",
+            (symbol, exchange, source),
+        )
+        self._conn.commit()
+
     def get_pending_symbols(self, market: str, source: str) -> list[dict]:
         """Get symbols that haven't been fully collected yet."""
         cur = self._conn.cursor()

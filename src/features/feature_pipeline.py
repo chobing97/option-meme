@@ -1,5 +1,6 @@
 """Unified feature engineering pipeline combining all feature modules."""
 
+import re
 from typing import Optional
 
 import pandas as pd
@@ -135,6 +136,11 @@ def get_all_feature_columns(df: pd.DataFrame) -> list[str]:
                 feature_cols.append(col)
                 break
     return sorted(feature_cols)
+
+
+def get_base_feature_columns(df: pd.DataFrame) -> list[str]:
+    """Get base feature columns only (excluding lag features)."""
+    return [c for c in get_all_feature_columns(df) if not re.search(r"_lag\d+$", c)]
 
 
 def feature_summary(df: pd.DataFrame) -> pd.DataFrame:

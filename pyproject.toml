@@ -18,6 +18,7 @@ dependencies = [
     "xgboost>=2.0",
     "torch>=2.0",
     "optuna>=3.4",
+    "mlflow>=2.10",
     # Utilities
     "exchange-calendars>=4.5",
     "tqdm>=4.66",

@@ -226,7 +226,7 @@ def _save_and_track(
     if not validation["valid"]:
         logger.warning(f"Validation issues for {ticker} ({source}): {validation}")
 
-    saved = save_bars(df, market=market, symbol=ticker)
+    saved = save_bars(df, market=market, symbol=ticker, source=source)
     total_bars = sum(saved.values())
 
     dt_series = df.index if isinstance(df.index, pd.DatetimeIndex) else pd.to_datetime(df["datetime"])

@@ -34,6 +34,7 @@ class PeakTroughLSTM(nn.Module):
         dropout: float = LSTM_DROPOUT,
     ):
         super().__init__()
+        self.input_norm = nn.BatchNorm1d(n_features)
         self.lstm = nn.LSTM(
             input_size=n_features,
             hidden_size=hidden_size,
@@ -61,6 +62,11 @@ class PeakTroughLSTM(nn.Module):
         Returns:
             [batch, 1] logits
         """
+        # Normalize inputs: BatchNorm1d expects [batch, features, seq_len]
+        x = x.permute(0, 2, 1)
+        x = self.input_norm(x)
+        x = x.permute(0, 2, 1)
+
         lstm_out, _ = self.lstm(x)  # [batch, seq_len, hidden*2]
 
         # Attention-weighted pooling
@@ -159,7 +165,7 @@ def train_lstm(
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=5,
+        optimizer, mode="max", factor=0.5, patience=4,
     )
 
     if use_focal_loss:
@@ -172,7 +178,7 @@ def train_lstm(
     best_val_prauc = 0
     best_model_state = None
     patience_counter = 0
-    patience = 10
+    patience = 8
 
     for epoch in range(1, epochs + 1):
         # Train
