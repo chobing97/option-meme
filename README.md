@@ -383,6 +383,18 @@ LSTM(L2/M3) ─▶ IsotonicRegression ─▶ LSTM_cal ───┘
                     (calibration)
 ```
 
+### 왜 앙상블인가?
+
+두 모델은 **완전히 다른 방식**으로 같은 문제를 본다.
+
+| | GBM | LSTM |
+|--|--|--|
+| 입력 | 270개 hand-crafted 피처 (lag 포함) | 45개 raw 피처 시퀀스 (10 steps) |
+| 학습 방식 | 통계적 패턴 (tree splits) | 시계열 흐름 (순서 기억) |
+| 강점 | 전체적인 정확도, 안정성 | GBM이 놓치는 단기 패턴 |
+
+→ 서로 다른 실수를 하므로, 잘 합치면 혼자보다 낫다.
+
 ### Phase 3.5: 앙상블 학습 (`ensemble` 스테이지)
 
 | 단계 | 내용 |
@@ -390,6 +402,42 @@ LSTM(L2/M3) ─▶ IsotonicRegression ─▶ LSTM_cal ───┘
 | **1. Calibration** | LSTM val 예측값 → `IsotonicRegression` 피팅 → 확률 캘리브레이션 |
 | **2. 가중치 탐색** | val set에서 w_gbm ∈ [0.50, 1.00] 그리드 탐색 → PR-AUC 최대화 |
 | **3. Test 평가** | GBM-only vs Ensemble test PR-AUC 비교 → MLflow 기록 |
+
+#### Step 1 — LSTM 캘리브레이션 (`src/model/calibrate.py`)
+
+LSTM은 확률값이 실제 확률을 반영하지 않는 문제(calibration 불량)가 있다. 실제 피크인 바의 출력이 0.03이고 피크가 아닌 바도 0.02라면 사실상 구분이 불가능하다. `IsotonicRegression`으로 이 값들을 "실제 양성 비율"에 맞게 보정한다.
+
+```
+LSTM raw:  [0.01, 0.02, 0.03, 0.03, 0.04]  ← 다 비슷비슷, 구분 안 됨
+LSTM cal:  [0.05, 0.12, 0.48, 0.51, 0.73]  ← 의미 있는 분포로 펼쳐짐
+```
+
+캘리브레이션은 **val set 예측값 vs 실제 레이블**로만 학습 → test set 누출 없음.
+
+#### Step 2 — 최적 가중치 탐색 (`src/model/ensemble.py`)
+
+val set에서 w_gbm을 0.50 ~ 1.00 사이로 바꿔가며 PR-AUC가 가장 높은 조합을 찾는다.
+
+```
+w_gbm=0.50 → PR-AUC 0.6991
+w_gbm=0.70 → PR-AUC 0.7089  ← best
+w_gbm=0.85 → PR-AUC 0.7061
+w_gbm=1.00 → PR-AUC 0.7026  (GBM 단독)
+```
+
+LSTM이 GBM을 실제로 보완하면 w_gbm < 1.0, 도움이 안 되면 w_gbm = 1.0 (GBM 단독)으로 자동 선택된다.
+
+#### Step 3 — Test set 비교 평가
+
+캘리브레이션·가중치는 val에서만 결정하고, test set에서 최종 비교한다.
+
+```
+GBM 단독:  peak PR-AUC=0.7011, trough PR-AUC=0.7041
+Ensemble:  peak PR-AUC=0.7089, trough PR-AUC=0.7118
+Delta:     peak  +0.0078,       trough  +0.0077
+```
+
+결과는 MLflow `ensemble_evaluation` run에 자동 기록된다.
 
 ### 앙상블 아티팩트
 
