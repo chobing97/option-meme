@@ -26,7 +26,7 @@ def predict_all(
 
     Args:
         market: 'kr' or 'us'
-        model_type: 'gbm', 'ensemble' (lstm is not supported for batch)
+        model_type: 'gbm', 'lstm', or 'ensemble'
         threshold: Probability threshold for peak/trough classification
         label_config: Label variant key (e.g. 'L1', 'L2'). None for legacy path.
         model_config: Model variant key (e.g. 'M1'~'M4'). None for legacy path.
@@ -51,49 +51,58 @@ def predict_all(
     df = pd.read_parquet(featured_path)
     logger.info(f"Loaded {len(df)} rows from {featured_path}")
 
-    # 2. Get feature columns (same ordering as training)
-    feature_cols = get_all_feature_columns(df)
-    if not feature_cols:
-        raise ValueError("No feature columns found in featured data")
-    logger.info(f"Using {len(feature_cols)} feature columns")
-
-    # 3. Prepare feature matrix
-    X = df[feature_cols].values.astype(np.float32)
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # 4. Load models and predict (variant-aware path)
+    # 2. Resolve models directory
     if label_config and model_config:
         models_dir = DATA_DIR / "models" / label_config / model_config
     else:
         models_dir = DATA_DIR / "models"
-    peak_path = models_dir / f"lgb_{market}_peak.txt"
-    trough_path = models_dir / f"lgb_{market}_trough.txt"
 
-    if not peak_path.exists() or not trough_path.exists():
-        raise FileNotFoundError(
-            f"LightGBM models not found at {models_dir}\n"
-            f"Train first: ./optionmeme model --market {market} --model gbm"
-        )
-
-    peak_model = load_model(peak_path)
-    trough_model = load_model(trough_path)
-
-    peak_proba = peak_model.predict(X)
-    trough_proba = trough_model.predict(X)
-    logger.info("GBM prediction complete")
-
-    # 5. Ensemble: combine with calibrated LSTM if requested
-    if model_type == "ensemble":
-        peak_proba, trough_proba = _ensemble_batch(
+    # 3. Run prediction based on model_type
+    if model_type == "lstm":
+        peak_proba, trough_proba = _lstm_batch(
             df=df,
-            gbm_peak_proba=peak_proba,
-            gbm_trough_proba=trough_proba,
             models_dir=models_dir,
             market=market,
-            label_config=label_config,
             model_config=model_config,
         )
-        logger.info("Ensemble prediction complete")
+        logger.info("LSTM prediction complete")
+    else:
+        # GBM or Ensemble (both start with GBM)
+        feature_cols = get_all_feature_columns(df)
+        if not feature_cols:
+            raise ValueError("No feature columns found in featured data")
+        logger.info(f"Using {len(feature_cols)} feature columns")
+
+        X = df[feature_cols].values.astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        peak_path = models_dir / f"lgb_{market}_peak.txt"
+        trough_path = models_dir / f"lgb_{market}_trough.txt"
+
+        if not peak_path.exists() or not trough_path.exists():
+            raise FileNotFoundError(
+                f"LightGBM models not found at {models_dir}\n"
+                f"Train first: ./optionmeme model --market {market} --model gbm"
+            )
+
+        peak_model = load_model(peak_path)
+        trough_model = load_model(trough_path)
+
+        peak_proba = peak_model.predict(X)
+        trough_proba = trough_model.predict(X)
+        logger.info("GBM prediction complete")
+
+        if model_type == "ensemble":
+            peak_proba, trough_proba = _ensemble_batch(
+                df=df,
+                gbm_peak_proba=peak_proba,
+                gbm_trough_proba=trough_proba,
+                models_dir=models_dir,
+                market=market,
+                label_config=label_config,
+                model_config=model_config,
+            )
+            logger.info("Ensemble prediction complete")
 
     # 6. Vectorized label assignment
     peak_proba = np.asarray(peak_proba)
@@ -114,9 +123,9 @@ def predict_all(
     result["peak_prob"] = np.round(peak_proba, 4).astype(np.float32)
     result["trough_prob"] = np.round(trough_proba, 4).astype(np.float32)
 
-    # 8. Save (variant-aware path)
+    # 8. Save (variant-aware path: model_type / label_config / model_config)
     if label_config and model_config:
-        pred_dir = PREDICTIONS_DIR / label_config / model_config
+        pred_dir = PREDICTIONS_DIR / model_type / label_config / model_config
     else:
         pred_dir = PREDICTIONS_DIR
     pred_dir.mkdir(parents=True, exist_ok=True)
@@ -408,6 +417,91 @@ def _predict_ensemble(
         f"trough={weights.get('trough', {}).get('w_gbm', '?')}"
     )
     return ensemble_result
+
+
+def _lstm_batch(
+    df: pd.DataFrame,
+    models_dir: Path,
+    market: str,
+    model_config: Optional[str] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run LSTM-only batch prediction on all symbols.
+
+    Groups per symbol to avoid cross-symbol lookback contamination.
+
+    Returns:
+        Tuple of (peak_proba, trough_proba), same length as df.
+    """
+    import torch
+
+    from src.features.feature_pipeline import get_base_feature_columns
+    from src.model.dataset import TimeSeriesDataset
+    from src.model.train_lstm import load_model as load_lstm
+    from src.model.train_lstm import predict as lstm_predict
+
+    fill_method = "0fill"
+    lstm_lookback = LOOKBACK_WINDOW
+    if model_config:
+        from config.variants import MODEL_CONFIGS
+        mcfg = MODEL_CONFIGS[model_config]
+        fill_method = mcfg["fill_method"]
+        lstm_lookback = mcfg["lstm_lookback"]
+
+    lstm_feature_cols = get_base_feature_columns(df)
+    n_lstm_features = len(lstm_feature_cols)
+
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+
+    peak_lstm_path = models_dir / f"lstm_{market}_peak.pt"
+    trough_lstm_path = models_dir / f"lstm_{market}_trough.pt"
+    if not peak_lstm_path.exists() or not trough_lstm_path.exists():
+        raise FileNotFoundError(
+            f"LSTM models not found in {models_dir}\n"
+            f"Train first: ./optionmeme model --market {market} --model lstm"
+        )
+
+    peak_lstm_model = load_lstm(peak_lstm_path, n_features=n_lstm_features)
+    trough_lstm_model = load_lstm(trough_lstm_path, n_features=n_lstm_features)
+
+    df_reset = df.reset_index(drop=True)
+    peak_all = np.zeros(len(df_reset), dtype=np.float32)
+    trough_all = np.zeros(len(df_reset), dtype=np.float32)
+
+    if "label" not in df_reset.columns:
+        df_reset = df_reset.copy()
+        df_reset["label"] = 0
+
+    symbol_col = "symbol" if "symbol" in df_reset.columns else None
+    groups = df_reset.groupby(symbol_col, sort=False) if symbol_col else [("all", df_reset)]
+
+    for sym, sym_df in groups:
+        positions = sym_df.index.tolist()
+        n_sym = len(positions)
+
+        peak_ds = TimeSeriesDataset(
+            sym_df, target_label=1, lookback=lstm_lookback,
+            feature_cols=lstm_feature_cols, fill_method=fill_method,
+        )
+        trough_ds = TimeSeriesDataset(
+            sym_df, target_label=2, lookback=lstm_lookback,
+            feature_cols=lstm_feature_cols, fill_method=fill_method,
+        )
+        peak_raw = lstm_predict(peak_lstm_model, peak_ds, device=device)
+        trough_raw = lstm_predict(trough_lstm_model, trough_ds, device=device)
+
+        if len(peak_raw) < n_sym:
+            peak_raw = np.concatenate([np.zeros(n_sym - len(peak_raw)), peak_raw])
+        if len(trough_raw) < n_sym:
+            trough_raw = np.concatenate([np.zeros(n_sym - len(trough_raw)), trough_raw])
+
+        peak_all[positions] = peak_raw[:n_sym]
+        trough_all[positions] = trough_raw[:n_sym]
+
+    return peak_all, trough_all
 
 
 def _ensemble_batch(

@@ -16,9 +16,13 @@ from dashboard.components.charts import (
 )
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    label_config_selector, market_selector, model_config_selector, reload_button, symbol_selector,
+    label_config_selector, market_selector, model_config_selector, model_type_selector,
+    reload_button, symbol_selector,
 )
-from dashboard.data_loader import get_stock_name_map, load_labeled, load_predicted, load_split_dates
+from dashboard.data_loader import (
+    find_configs_for_model_type, get_available_model_types, get_stock_name_map,
+    load_labeled, load_predicted, load_split_dates,
+)
 
 st.set_page_config(page_title="Predictions", layout="wide")
 st.title("Phase 5: Predictions")
@@ -31,12 +35,31 @@ reload_button()
 market = market_selector(key="pred_market")
 lc = label_config_selector(key="pred_lc")
 mc = model_config_selector(key="pred_mc")
-pred_df = load_predicted(market, lc, mc)
+mt = model_type_selector(key="pred_mt")
+
+# Auto-switch L/M if selected model_type has no data for current config
+available_mt = get_available_model_types(market, lc, mc)
+if mt not in available_mt:
+    valid_configs = find_configs_for_model_type(market, mt)
+    if valid_configs:
+        best_lc, best_mc = valid_configs[0]
+        st.session_state["pred_lc"] = best_lc
+        st.session_state["pred_mc"] = best_mc
+        st.rerun()
+    else:
+        mt_display = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}.get(mt, mt)
+        st.warning(
+            f"No **{mt_display}** prediction data for **{market.upper()}**. "
+            f"Run: `./optionmeme batch_predict --market {market} --model {mt}`"
+        )
+        st.stop()
+
+pred_df = load_predicted(market, lc, mc, mt)
 
 if pred_df.empty:
     st.warning(
-        f"No prediction data for **{market.upper()}**. "
-        f"Run: `python run_pipeline.py predict --market {market}`"
+        f"No prediction data for **{market.upper()}** ({mt.upper()}). "
+        f"Run: `./optionmeme batch_predict --market {market} --model {mt}`"
     )
     st.stop()
 
@@ -78,7 +101,8 @@ st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 
 # ── Label vs Prediction ──────────────────────────────────
 
-st.subheader(f"Label vs Prediction — {stock_label}")
+mt_display = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}.get(mt, mt)
+st.subheader(f"Label vs Prediction ({mt_display}) — {stock_label}")
 
 dates = sorted(sym_pred["date"].unique()) if "date" in sym_pred.columns else []
 kb_nav_apply_date(kb_dir, dates, "pred_chart_date")
@@ -118,9 +142,9 @@ else:
                 use_container_width=True,
             )
         with col_right:
-            st.markdown("**Model Prediction**")
+            st.markdown(f"**Model Prediction ({mt_display})**")
             st.plotly_chart(
-                make_candlestick_with_probs(day_pred, f"{stock_label} — Prediction"),
+                make_candlestick_with_probs(day_pred, f"{stock_label} — {mt_display}"),
                 use_container_width=True,
             )
 

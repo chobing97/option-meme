@@ -16,7 +16,7 @@ def reload_button() -> None:
 
 def market_selector(key: str = "market") -> str:
     """Radio button to pick KR or US market."""
-    return st.sidebar.radio("Market", ["kr", "us"], format_func=str.upper, key=key, horizontal=True)
+    return st.sidebar.radio("Market", ["us", "kr"], format_func=str.upper, key=key, horizontal=True)
 
 
 def label_config_selector(key: str = "label_config") -> str:
@@ -31,6 +31,17 @@ def model_config_selector(key: str = "model_config") -> str:
     from config.variants import MODEL_CONFIGS
     options = sorted(MODEL_CONFIGS.keys())
     return st.sidebar.radio("Model Config", options, key=key, horizontal=True)
+
+
+def model_type_selector(key: str = "model_type") -> str:
+    """Radio button to pick model type (gbm/lstm/ensemble). Always shows all options."""
+    all_types = ["gbm", "lstm", "ensemble"]
+    labels = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}
+    return st.sidebar.radio(
+        "Model Type", all_types,
+        format_func=lambda x: labels.get(x, x),
+        key=key, horizontal=True,
+    )
 
 
 def symbol_selector(

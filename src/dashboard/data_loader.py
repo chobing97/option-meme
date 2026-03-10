@@ -70,6 +70,52 @@ def _raw_symbols(market: str) -> list[str]:
 # ── Raw OHLCV ─────────────────────────────────────────────
 
 
+@st.cache_data(show_spinner=False)
+def get_raw_date_range(market: str, symbol: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """Get min/max datetime for a symbol by reading only the first and last parquet files."""
+    from src.collector.storage import RAW_STOCK_DIR as _RAW
+
+    symbol_dir = _RAW / market / symbol
+    if not symbol_dir.exists() and market == "kr":
+        stripped = symbol.lstrip("0")
+        if stripped != symbol:
+            symbol_dir = _RAW / market / stripped
+    if not symbol_dir.exists():
+        return None
+
+    parquet_files = sorted(symbol_dir.glob("*.parquet"))
+    if not parquet_files:
+        return None
+
+    first = pd.read_parquet(parquet_files[0], columns=["datetime"])
+    last = pd.read_parquet(parquet_files[-1], columns=["datetime"]) if len(parquet_files) > 1 else first
+    return first["datetime"].min(), last["datetime"].max()
+
+
+@st.cache_data(show_spinner="Loading trading dates...")
+def get_raw_trading_dates(market: str, symbol: str) -> list:
+    """Get unique trading dates for a symbol by reading only the datetime column."""
+    from src.collector.storage import RAW_STOCK_DIR as _RAW
+
+    symbol_dir = _RAW / market / symbol
+    if not symbol_dir.exists() and market == "kr":
+        stripped = symbol.lstrip("0")
+        if stripped != symbol:
+            symbol_dir = _RAW / market / stripped
+    if not symbol_dir.exists():
+        return []
+
+    parquet_files = sorted(symbol_dir.glob("*.parquet"))
+    if not parquet_files:
+        return []
+
+    dates = set()
+    for pf in parquet_files:
+        dt_col = pd.read_parquet(pf, columns=["datetime"])
+        dates.update(dt_col["datetime"].dt.date.unique())
+    return sorted(dates)
+
+
 @st.cache_data(show_spinner="Loading raw bars...")
 def load_raw_bars(market: str, symbol: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
     from src.collector.storage import load_bars

@@ -787,24 +787,27 @@ def run_batch_predict(
     """Run batch prediction for all symbols/dates in featured data."""
     from src.inference.predict import predict_all
 
-    for market in markets:
-        logger.info(f"=== Batch predicting {market} [{label_config}/{model_config}] ===")
-        try:
-            result = predict_all(
-                market=market,
-                model_type=model_type,
-                threshold=threshold,
-                label_config=label_config,
-                model_config=model_config,
-            )
-            n_peaks = int((result["label"] == 1).sum())
-            n_troughs = int((result["label"] == 2).sum())
-            logger.info(
-                f"Done {market}: {len(result)} rows, "
-                f"peaks={n_peaks}, troughs={n_troughs}"
-            )
-        except (FileNotFoundError, ValueError) as e:
-            logger.error(f"Batch predict failed for {market}: {e}")
+    model_types = ["gbm", "lstm", "ensemble"] if model_type == "all" else [model_type]
+
+    for mt in model_types:
+        for market in markets:
+            logger.info(f"=== Batch predicting {market} [{label_config}/{model_config}] model={mt} ===")
+            try:
+                result = predict_all(
+                    market=market,
+                    model_type=mt,
+                    threshold=threshold,
+                    label_config=label_config,
+                    model_config=model_config,
+                )
+                n_peaks = int((result["label"] == 1).sum())
+                n_troughs = int((result["label"] == 2).sum())
+                logger.info(
+                    f"Done {market}/{mt}: {len(result)} rows, "
+                    f"peaks={n_peaks}, troughs={n_troughs}"
+                )
+            except (FileNotFoundError, ValueError) as e:
+                logger.error(f"Batch predict failed for {market}/{mt}: {e}")
 
 
 # ── Predict ──────────────────────────────────────────────

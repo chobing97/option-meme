@@ -29,7 +29,7 @@ st.divider()
 label_keys = sorted(LABEL_CONFIGS.keys())
 model_keys = sorted(MODEL_CONFIGS.keys())
 
-for market in ["kr", "us"]:
+for market in ["us", "kr"]:
     st.subheader(f"Market: {market.upper()}")
     raw = get_raw_summary(market)
 
