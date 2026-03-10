@@ -24,6 +24,7 @@ LOG_TIME="$(date +%H%M%S)"
 LOG_FILE="${LOG_DIR}/run.sh-${STAGE}-${LOG_TIME}.log"
 
 source "${VENV_DIR}/bin/activate"
+export PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # Dashboard: launch Streamlit directly (not a pipeline stage)
 if [ "${STAGE}" = "dashboard" ]; then
