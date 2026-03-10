@@ -86,6 +86,10 @@ def load_bars(
         DataFrame with datetime index and OHLCV columns.
     """
     symbol_dir = RAW_DIR / market / symbol
+    if not symbol_dir.exists() and market == "kr":
+        stripped = symbol.lstrip("0")
+        if stripped != symbol:
+            symbol_dir = RAW_DIR / market / stripped
     if not symbol_dir.exists():
         return pd.DataFrame()
 
