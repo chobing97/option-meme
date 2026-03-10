@@ -74,7 +74,7 @@ class SignalDetector:
             if not peak_path.exists() or not trough_path.exists():
                 raise FileNotFoundError(
                     f"Model files not found at {models_dir}. "
-                    f"Train first: ./run.sh model --market {self.market} --model gbm"
+                    f"Train first: ./optionmeme model --market {self.market} --model gbm"
                 )
 
             self._peak_model = load_model(peak_path)

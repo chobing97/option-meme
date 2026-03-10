@@ -598,7 +598,7 @@ def run_ensemble(
         if not val_path.exists() or not test_path.exists():
             logger.error(
                 f"Splits not found at {splits_dir}. "
-                f"Run model first: ./run.sh model --market {market} "
+                f"Run model first: ./optionmeme model --market {market} "
                 f"--label-config {label_config} --model-config {model_config}"
             )
             continue
@@ -908,25 +908,25 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  ./run.sh all                      Full pipeline (all markets)
-  ./run.sh collector --market kr    KR data collection (incremental)
-  ./run.sh collector --full         Full re-collection
-  ./run.sh labeler --market us      US labeling
-  ./run.sh features                 Feature engineering (all markets)
-  ./run.sh model --model gbm       LightGBM training only
-  ./run.sh all --market kr          KR full pipeline
-  ./run.sh predict --market kr --symbol 5930 --model gbm
-  ./run.sh predict --market us --symbol AAPL --model all --threshold 0.3
-  ./run.sh predict --market kr --symbol 5930 --date 2026-02-20
-  ./run.sh trade --market kr --symbol 5930 --model gbm
-  ./run.sh trade --market kr --symbol 5930 660 --model gbm
-  ./run.sh trade --market kr --symbol 5930 --model gbm --quantity 2
-  ./run.sh trade --market kr --symbol 5930 --date 2026-02-19
-  ./run.sh batch_predict --market all --model gbm --threshold 0.3
-  ./run.sh labeler --label-config L2
-  ./run.sh features --label-config L2 --model-config M3
-  ./run.sh model --label-config L2 --model-config M3
-  ./run.sh batch_predict --label-config all --model-config all
+  ./optionmeme all                      Full pipeline (all markets)
+  ./optionmeme collector --market kr    KR data collection (incremental)
+  ./optionmeme collector --full         Full re-collection
+  ./optionmeme labeler --market us      US labeling
+  ./optionmeme features                 Feature engineering (all markets)
+  ./optionmeme model --model gbm       LightGBM training only
+  ./optionmeme all --market kr          KR full pipeline
+  ./optionmeme predict --market kr --symbol 5930 --model gbm
+  ./optionmeme predict --market us --symbol AAPL --model all --threshold 0.3
+  ./optionmeme predict --market kr --symbol 5930 --date 2026-02-20
+  ./optionmeme trade --market kr --symbol 5930 --model gbm
+  ./optionmeme trade --market kr --symbol 5930 660 --model gbm
+  ./optionmeme trade --market kr --symbol 5930 --model gbm --quantity 2
+  ./optionmeme trade --market kr --symbol 5930 --date 2026-02-19
+  ./optionmeme batch_predict --market all --model gbm --threshold 0.3
+  ./optionmeme labeler --label-config L2
+  ./optionmeme features --label-config L2 --model-config M3
+  ./optionmeme model --label-config L2 --model-config M3
+  ./optionmeme batch_predict --label-config all --model-config all
 """,
     )
 

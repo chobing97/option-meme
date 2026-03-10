@@ -45,7 +45,7 @@ def predict_all(
     if not featured_path.exists():
         raise FileNotFoundError(
             f"Featured data not found: {featured_path}\n"
-            f"Run features first: ./run.sh features --market {market}"
+            f"Run features first: ./optionmeme features --market {market}"
         )
 
     df = pd.read_parquet(featured_path)
@@ -72,7 +72,7 @@ def predict_all(
     if not peak_path.exists() or not trough_path.exists():
         raise FileNotFoundError(
             f"LightGBM models not found at {models_dir}\n"
-            f"Train first: ./run.sh model --market {market} --model gbm"
+            f"Train first: ./optionmeme model --market {market} --model gbm"
         )
 
     peak_model = load_model(peak_path)
@@ -180,7 +180,7 @@ def predict_symbol(
     if raw_df.empty:
         raise FileNotFoundError(
             f"No data found for {market}/{symbol}. Run collector first: "
-            f"./run.sh collector --market {market} --symbol {symbol}"
+            f"./optionmeme collector --market {market} --symbol {symbol}"
         )
 
     # 2. Extract early session (first 60 min)
@@ -358,7 +358,7 @@ def _predict_ensemble(
     """Predict using GBM + calibrated LSTM ensemble (single symbol).
 
     Requires ensemble artifacts produced by:
-        ./run.sh ensemble --market {market} --label-config L --model-config M
+        ./optionmeme ensemble --market {market} --label-config L --model-config M
     """
     from src.features.feature_pipeline import get_base_feature_columns
     from src.model.calibrate import apply_calibration, load_calibrator
@@ -369,7 +369,7 @@ def _predict_ensemble(
     if not weights_path.exists():
         raise FileNotFoundError(
             f"Ensemble weights not found: {weights_path}\n"
-            f"Run ensemble first: ./run.sh ensemble --market {market}"
+            f"Run ensemble first: ./optionmeme ensemble --market {market}"
         )
     weights = load_weights(weights_path)
 
@@ -397,7 +397,7 @@ def _predict_ensemble(
         if not cal_path.exists():
             raise FileNotFoundError(
                 f"Calibrator not found: {cal_path}\n"
-                f"Run ensemble first: ./run.sh ensemble --market {market}"
+                f"Run ensemble first: ./optionmeme ensemble --market {market}"
             )
         calibrator = load_calibrator(cal_path)
         lstm_cal = apply_calibration(calibrator, lstm_preds[label_name])
@@ -447,7 +447,7 @@ def _ensemble_batch(
     if not weights_path.exists():
         raise FileNotFoundError(
             f"Ensemble weights not found: {weights_path}\n"
-            f"Run ensemble first: ./run.sh ensemble --market {market}"
+            f"Run ensemble first: ./optionmeme ensemble --market {market}"
         )
     weights = load_weights(weights_path)
 
@@ -544,12 +544,12 @@ def _predict_gbm(
     if not peak_path.exists():
         raise FileNotFoundError(
             f"LightGBM peak model not found: {peak_path}\n"
-            f"Train first: ./run.sh model --market {market} --model gbm"
+            f"Train first: ./optionmeme model --market {market} --model gbm"
         )
     if not trough_path.exists():
         raise FileNotFoundError(
             f"LightGBM trough model not found: {trough_path}\n"
-            f"Train first: ./run.sh model --market {market} --model gbm"
+            f"Train first: ./optionmeme model --market {market} --model gbm"
         )
 
     peak_model = load_model(peak_path)
@@ -584,12 +584,12 @@ def _predict_lstm(
     if not peak_path.exists():
         raise FileNotFoundError(
             f"LSTM peak model not found: {peak_path}\n"
-            f"Train first: ./run.sh model --market {market} --model lstm"
+            f"Train first: ./optionmeme model --market {market} --model lstm"
         )
     if not trough_path.exists():
         raise FileNotFoundError(
             f"LSTM trough model not found: {trough_path}\n"
-            f"Train first: ./run.sh model --market {market} --model lstm"
+            f"Train first: ./optionmeme model --market {market} --model lstm"
         )
 
     n_features = len(feature_cols)

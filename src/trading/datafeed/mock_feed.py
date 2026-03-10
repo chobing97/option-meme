@@ -40,7 +40,7 @@ class MockDataFeed(DataFeed):
         if raw_df.empty:
             raise FileNotFoundError(
                 f"No data for {self.market}/{self.symbol}. "
-                f"Run: ./run.sh collector --market {self.market} --symbol {self.symbol}"
+                f"Run: ./optionmeme collector --market {self.market} --symbol {self.symbol}"
             )
 
         early_df = extract_early_session(raw_df, self.market)

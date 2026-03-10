@@ -58,39 +58,39 @@ export DATABENTO_API_KEY="your-api-key"
 
 ```bash
 # 전체 파이프라인 (모든 시장, 모든 변형)
-./run.sh all
+./optionmeme all
 
 # 미국 시장만 전체 파이프라인
-./run.sh all --market us
+./optionmeme all --market us
 
 # 한국 시장만 전체 파이프라인
-./run.sh all --market kr
+./optionmeme all --market kr
 ```
 
 ### 단계별 실행
 
 ```bash
 # Phase 0: 데이터 수집
-./run.sh collector --market us      # 미국 시장 증분 수집
-./run.sh collector --full           # 전체 재수집
+./optionmeme collector --market us      # 미국 시장 증분 수집
+./optionmeme collector --full           # 전체 재수집
 
 # Phase 1: 라벨링
-./run.sh labeler --market us
-./run.sh labeler --label-config L2  # L2 변형만
+./optionmeme labeler --market us
+./optionmeme labeler --label-config L2  # L2 변형만
 
 # Phase 2: 피처 엔지니어링
-./run.sh features --label-config all --model-config all
+./optionmeme features --label-config all --model-config all
 
 # Phase 3: 모델 학습
-./run.sh model --model gbm          # LightGBM만
-./run.sh model --model lstm          # LSTM만
-./run.sh model --label-config L2 --model-config M1  # 특정 조합
+./optionmeme model --model gbm          # LightGBM만
+./optionmeme model --model lstm          # LSTM만
+./optionmeme model --label-config L2 --model-config M1  # 특정 조합
 
 # Phase 4: 배치 예측
-./run.sh batch_predict --label-config all --model-config all
+./optionmeme batch_predict --label-config all --model-config all
 
 # Phase 5: 트레이딩 (모의)
-./run.sh trade --market us
+./optionmeme trade --market us
 ```
 
 ### 미국 주식 Databento 수집 (고품질 데이터)
@@ -123,7 +123,7 @@ pytest tests/ -v
 
 ```
 option-meme/
-├── run.sh                    # CLI 진입점 (venv 자동 활성화 + 로그)
+├── optionmeme                # CLI 진입점 (venv 자동 활성화 + 로그)
 ├── run_pipeline.py           # 파이프라인 오케스트레이터
 ├── pyproject.toml            # 프로젝트 메타데이터 & 의존성
 ├── dashboard.sh              # Streamlit 대시보드 런처
@@ -458,14 +458,14 @@ data/models/{L}/{M}/
 
 ```bash
 # 1. GBM + LSTM 모두 학습 필요
-./run.sh model --market us --model all --label-config L2 --model-config M3
+./optionmeme model --market us --model all --label-config L2 --model-config M3
 
 # 2. 앙상블 (캘리브레이션 + 최적 가중치 탐색 + test 비교 평가)
-./run.sh ensemble --market us --label-config L2 --model-config M3
+./optionmeme ensemble --market us --label-config L2 --model-config M3
 
 # 3. 앙상블 추론
-./run.sh predict --market us --symbol AAPL --model ensemble --label-config L2 --model-config M3
-./run.sh batch_predict --market us --model ensemble --label-config L2 --model-config M3
+./optionmeme predict --market us --symbol AAPL --model ensemble --label-config L2 --model-config M3
+./optionmeme batch_predict --market us --model ensemble --label-config L2 --model-config M3
 ```
 
 ### 앙상블 MLflow 실험 구조
