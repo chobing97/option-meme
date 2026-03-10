@@ -7,9 +7,9 @@ from typing import Optional
 
 from loguru import logger
 
-from config.settings import RAW_DIR
+from config.settings import RAW_STOCK_DIR
 
-DB_PATH = RAW_DIR / "stock_info.db"
+DB_PATH = RAW_STOCK_DIR / "stock_info.db"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS stock_info (

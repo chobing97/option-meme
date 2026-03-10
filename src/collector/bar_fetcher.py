@@ -316,8 +316,8 @@ class BarFetcher:
 
         # ── Full mode: clear existing data first ──────
         if full:
-            from src.collector.storage import RAW_DIR
-            symbol_dir = RAW_DIR / market / ticker
+            from src.collector.storage import RAW_STOCK_DIR
+            symbol_dir = RAW_STOCK_DIR / market / ticker
             if symbol_dir.exists():
                 for pf in symbol_dir.glob("*.parquet"):
                     pf.unlink()

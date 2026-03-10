@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_DIR
+from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_STOCK_DIR
 
 import logging
 
@@ -55,13 +55,13 @@ def _splits_path(market: str, label_config: str, model_config: str, split: str) 
     return MODELS_DIR / label_config / model_config / "splits" / f"{market}_{split}.parquet"
 
 
-def _predicted_path(market: str, label_config: str, model_config: str) -> Path:
-    return PREDICTIONS_DIR / label_config / model_config / f"{market}_predicted.parquet"
+def _predicted_path(market: str, label_config: str, model_config: str, model_type: str = "gbm") -> Path:
+    return PREDICTIONS_DIR / model_type / label_config / model_config / f"{market}_predicted.parquet"
 
 
 def _raw_symbols(market: str) -> list[str]:
     """List available symbols in raw data directory."""
-    market_dir = RAW_DIR / market
+    market_dir = RAW_STOCK_DIR / market
     if not market_dir.exists():
         return []
     return sorted(d.name for d in market_dir.iterdir() if d.is_dir())
@@ -90,7 +90,7 @@ def get_raw_summary(market: str) -> dict:
     total_bars = 0
     min_dt, max_dt = None, None
     for sym in symbols:
-        sym_dir = RAW_DIR / market / sym
+        sym_dir = RAW_STOCK_DIR / market / sym
         for pf in sym_dir.glob("*.parquet"):
             try:
                 df = pd.read_parquet(pf, columns=["datetime"])
@@ -189,12 +189,35 @@ def get_labeled_summary(market: str, label_config: str) -> dict:
 
 
 @st.cache_data(show_spinner="Loading predictions...")
-def load_predicted(market: str, label_config: str, model_config: str) -> pd.DataFrame:
+def load_predicted(market: str, label_config: str, model_config: str, model_type: str = "gbm") -> pd.DataFrame:
     """Load predicted labels from PREDICTIONS_DIR."""
-    path = _predicted_path(market, label_config, model_config)
+    path = _predicted_path(market, label_config, model_config, model_type)
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
+
+
+@st.cache_data(show_spinner=False)
+def get_available_model_types(market: str, label_config: str, model_config: str) -> list[str]:
+    """Scan PREDICTIONS_DIR for available model_type subdirectories that have data."""
+    available = []
+    for mt in ("gbm", "lstm", "ensemble"):
+        path = _predicted_path(market, label_config, model_config, mt)
+        if path.exists():
+            available.append(mt)
+    return available
+
+
+@st.cache_data(show_spinner=False)
+def find_configs_for_model_type(market: str, model_type: str) -> list[tuple[str, str]]:
+    """Find all (label_config, model_config) pairs that have prediction data for a model_type."""
+    from config.variants import LABEL_CONFIGS, MODEL_CONFIGS
+    results = []
+    for lc in sorted(LABEL_CONFIGS.keys()):
+        for mc in sorted(MODEL_CONFIGS.keys()):
+            if _predicted_path(market, lc, mc, model_type).exists():
+                results.append((lc, mc))
+    return results
 
 
 # ── Split info ────────────────────────────────────────────

@@ -115,10 +115,10 @@ def label_all_symbols(
     Returns:
         Combined labeled DataFrame.
     """
-    from config.settings import RAW_DIR
+    from config.settings import RAW_STOCK_DIR
 
     if symbols is None:
-        market_dir = RAW_DIR / market
+        market_dir = RAW_STOCK_DIR / market
         if not market_dir.exists():
             logger.error(f"No raw data directory for market {market}")
             return pd.DataFrame()

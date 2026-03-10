@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
 
-from config.settings import RAW_DIR
+from config.settings import RAW_STOCK_DIR
 
 
 # Schema for consistent Parquet files
@@ -26,9 +26,9 @@ OHLCV_SCHEMA = pa.schema([
 def get_parquet_path(market: str, symbol: str, year: int) -> Path:
     """Get path for a symbol's yearly Parquet file.
 
-    Example: data/raw/kr/005930/2024.parquet
+    Example: data/raw/stock/kr/005930/2024.parquet
     """
-    path = RAW_DIR / market / symbol / f"{year}.parquet"
+    path = RAW_STOCK_DIR / market / symbol / f"{year}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -85,11 +85,11 @@ def load_bars(
     Returns:
         DataFrame with datetime index and OHLCV columns.
     """
-    symbol_dir = RAW_DIR / market / symbol
+    symbol_dir = RAW_STOCK_DIR / market / symbol
     if not symbol_dir.exists() and market == "kr":
         stripped = symbol.lstrip("0")
         if stripped != symbol:
-            symbol_dir = RAW_DIR / market / stripped
+            symbol_dir = RAW_STOCK_DIR / market / stripped
     if not symbol_dir.exists():
         return pd.DataFrame()
 

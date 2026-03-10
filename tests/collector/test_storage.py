@@ -15,8 +15,8 @@ from src.collector.storage import (
 
 @pytest.fixture(autouse=True)
 def _patch_raw_dir(tmp_path):
-    """Redirect RAW_DIR to tmp_path for every test in this module."""
-    with patch("src.collector.storage.RAW_DIR", tmp_path):
+    """Redirect RAW_STOCK_DIR to tmp_path for every test in this module."""
+    with patch("src.collector.storage.RAW_STOCK_DIR", tmp_path):
         yield
 
 
