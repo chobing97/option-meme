@@ -105,4 +105,4 @@ US_MARKET_CLOSE = "16:00"             # US 장마감
 TRADE_FORCE_CLOSE_MINUTES = 120       # 장마감 N분 전 강제청산
 
 # Trade DB
-TRADE_DB_DIR = PROJECT_ROOT / "data_meme"
+TRADE_DB_DIR = DATA_DIR / "trading"
