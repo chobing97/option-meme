@@ -25,5 +25,10 @@ LOG_FILE="${LOG_DIR}/run.sh-${STAGE}-${LOG_TIME}.log"
 
 source "${VENV_DIR}/bin/activate"
 
+# Dashboard: launch Streamlit directly (not a pipeline stage)
+if [ "${STAGE}" = "dashboard" ]; then
+    exec streamlit run "${SCRIPT_DIR}/src/dashboard/app.py" --server.headless true "${@:2}"
+fi
+
 echo "Logging to: ${LOG_FILE}"
 python "${SCRIPT_DIR}/src/run_pipeline.py" "$@" 2>&1 | tee "${LOG_FILE}"
