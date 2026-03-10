@@ -26,4 +26,4 @@ LOG_FILE="${LOG_DIR}/run.sh-${STAGE}-${LOG_TIME}.log"
 source "${VENV_DIR}/bin/activate"
 
 echo "Logging to: ${LOG_FILE}"
-python "${SCRIPT_DIR}/run_pipeline.py" "$@" 2>&1 | tee "${LOG_FILE}"
+python "${SCRIPT_DIR}/src/run_pipeline.py" "$@" 2>&1 | tee "${LOG_FILE}"

@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-exec .venv/bin/streamlit run dashboard/app.py --server.headless true "$@"
+exec .venv/bin/streamlit run src/dashboard/app.py --server.headless true "$@"

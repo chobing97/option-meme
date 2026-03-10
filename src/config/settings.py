@@ -3,7 +3,7 @@
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
@@ -12,7 +12,7 @@ LABELED_MANUAL_DIR = PROCESSED_DIR / "labeled_manual"
 PREDICTIONS_DIR = DATA_DIR / "predictions" / "labeled"
 METADATA_DIR = DATA_DIR / "metadata"
 LOG_DIR = DATA_DIR / "metadata" / "logs"
-CONFIG_DIR = PROJECT_ROOT / "config"
+CONFIG_DIR = PROJECT_ROOT / "src" / "config"
 SYMBOLS_DIR = CONFIG_DIR / "symbols"
 
 # ── Market Sessions ───────────────────────────────────
