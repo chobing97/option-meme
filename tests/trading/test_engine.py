@@ -13,7 +13,6 @@ from src.trading.broker.base import (
 from src.trading.broker.mock_broker import MockBroker
 from src.trading.engine import TradingEngine
 from src.trading.notifier.console import ConsoleNotifier
-from src.trading.trade_db import TradeDB
 from tests.trading.conftest import (
     StubDetector,
     StubFeed,
@@ -28,7 +27,6 @@ def _make_engine(
     capital: float = 10_000_000,
     quantity: int = 1,
     notifiers=None,
-    trade_db=None,
     market: str = "kr",
 ):
     """Helper: build a TradingEngine with stub feeds and detector."""
@@ -46,7 +44,6 @@ def _make_engine(
         symbols=symbols,
         quantity=quantity,
         notifiers=notifiers or [],
-        trade_db=trade_db,
     )
 
 
@@ -272,44 +269,6 @@ class TestNotifierIntegration:
         engine.run()
         out = capsys.readouterr().out
         assert "Session Summary" in out
-
-
-class TestTradeDBIntegration:
-    def test_trade_recorded(self, tmp_path):
-        bars = make_bars(3)
-        signals = [
-            _signal(SignalType.PEAK, close=50000.0),
-            _signal(SignalType.TROUGH, close=50020.0),
-            _signal(SignalType.NONE),
-        ]
-        db = TradeDB(tmp_path / "test.db")
-        engine = _make_engine({"A": bars}, signals, trade_db=db)
-        engine.run()
-
-        import sqlite3
-        conn = sqlite3.connect(str(tmp_path / "test.db"))
-        trade_count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-        summary_count = conn.execute("SELECT COUNT(*) FROM daily_summary").fetchone()[0]
-        conn.close()
-        db.close()
-
-        assert trade_count == 2  # 1 buy + 1 sell
-        assert summary_count == 1
-
-    def test_summary_recorded_even_no_trades(self, tmp_path):
-        bars = make_bars(1)
-        signals = [_signal(SignalType.NONE)]
-        db = TradeDB(tmp_path / "test.db")
-        engine = _make_engine({"A": bars}, signals, trade_db=db)
-        engine.run()
-
-        import sqlite3
-        conn = sqlite3.connect(str(tmp_path / "test.db"))
-        summary_count = conn.execute("SELECT COUNT(*) FROM daily_summary").fetchone()[0]
-        conn.close()
-        db.close()
-
-        assert summary_count == 1
 
 
 class TestSignalCounting:

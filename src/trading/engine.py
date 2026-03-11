@@ -21,7 +21,7 @@ from src.trading.broker.base import (
 from src.trading.datafeed.base import DataFeed
 from src.trading.notifier.base import Notifier, TradeEvent
 from src.trading.signal_detector import BarAccumulator, SignalDetector
-from src.trading.trade_db import TradeDB
+from src.trading.trade_tracker import TradeTracker
 
 
 class TradingEngine:
@@ -43,7 +43,7 @@ class TradingEngine:
         symbols: list[str],
         quantity: int = 1,
         notifiers: list[Notifier] | None = None,
-        trade_db: TradeDB | None = None,
+        tracker: TradeTracker | None = None,
     ):
         self.feeds = feeds
         self.broker = broker
@@ -51,7 +51,7 @@ class TradingEngine:
         self.symbols = symbols
         self.quantity = quantity
         self.notifiers = notifiers or []
-        self.trade_db = trade_db
+        self.tracker = tracker
 
         # Per-symbol tracking
         self._buy_orders: dict[str, list[Order]] = {s: [] for s in symbols}
@@ -132,34 +132,63 @@ class TradingEngine:
                     self._signals_summary[symbol]["troughs"] += 1
 
                 # === Trading rules (priority order) ===
+                action = ""
+                reason = ""
+                trade_strike = 0.0
+                trade_fill_price = 0.0
 
                 # 1. Force close check
                 if force_close_time and self._is_force_close_time(dt, force_close_time):
                     if self._has_put(symbol):
                         self._close_all_puts(symbol, "FORCE_CLOSE", session_date, market)
+                        action, reason = "SELL_PUT", "FORCE_CLOSE"
+                    self._record_bar_snapshot(
+                        symbol, bar_nums[symbol], close_price, dt, signal,
+                        action, reason, trade_strike, trade_fill_price,
+                    )
                     continue
 
                 # 2. Stop loss check
                 if self._check_stop_loss(symbol):
                     self._close_all_puts(symbol, "STOP_LOSS", session_date, market)
+                    action, reason = "SELL_PUT", "STOP_LOSS"
+                    self._record_bar_snapshot(
+                        symbol, bar_nums[symbol], close_price, dt, signal,
+                        action, reason, trade_strike, trade_fill_price,
+                    )
                     continue
 
                 # 3. Profit target check
                 if self._check_profit_target(symbol):
                     self._close_all_puts(symbol, "PROFIT_TARGET", session_date, market)
+                    action, reason = "SELL_PUT", "PROFIT_TARGET"
+                    self._record_bar_snapshot(
+                        symbol, bar_nums[symbol], close_price, dt, signal,
+                        action, reason, trade_strike, trade_fill_price,
+                    )
                     continue
 
                 # 4. Trough signal -> sell
                 if signal.signal_type == SignalType.TROUGH and self._has_put(symbol):
                     self._close_all_puts(symbol, "TROUGH_SIGNAL", session_date, market)
-                    continue
+                    action, reason = "SELL_PUT", "TROUGH_SIGNAL"
 
                 # 5. Peak signal -> buy
-                if (
+                elif (
                     signal.signal_type == SignalType.PEAK
                     and not self._has_put(symbol)
                 ):
-                    self._buy_atm_put(symbol, signal.close_price, session_date, market)
+                    filled = self._buy_atm_put(symbol, signal.close_price, session_date, market)
+                    if filled and filled.status == OrderStatus.FILLED:
+                        action = "BUY_PUT"
+                        reason = "PEAK_SIGNAL"
+                        trade_strike = filled.contract.strike
+                        trade_fill_price = filled.fill_price
+
+                self._record_bar_snapshot(
+                    symbol, bar_nums[symbol], close_price, dt, signal,
+                    action, reason, trade_strike, trade_fill_price,
+                )
 
         # End of session
         for symbol in self.symbols:
@@ -221,11 +250,11 @@ class TradingEngine:
     def _buy_atm_put(
         self, symbol: str, close_price: float,
         session_date: str | None, market: str,
-    ) -> None:
+    ) -> Order | None:
         chain = self.broker.get_option_chain(symbol, "put")
         if not chain:
             logger.warning(f"[{symbol}] No option chain available")
-            return
+            return None
 
         atm = min(chain, key=lambda c: abs(c.strike - close_price))
 
@@ -238,7 +267,7 @@ class TradingEngine:
 
         if filled.status == OrderStatus.REJECTED:
             print(f"  [{symbol}] BUY REJECTED: insufficient cash")
-            return
+            return filled
 
         self._buy_orders[symbol].append(filled)
 
@@ -258,11 +287,7 @@ class TradingEngine:
                 },
             ))
 
-        # DB record
-        if self.trade_db and session_date:
-            self.trade_db.record_trade(
-                session_date, market, symbol, filled, "PEAK_SIGNAL"
-            )
+        return filled
 
     def _close_all_puts(
         self, symbol: str, reason: str,
@@ -298,11 +323,52 @@ class TradingEngine:
                     },
                 ))
 
-            # DB record
-            if self.trade_db and session_date:
-                self.trade_db.record_trade(
-                    session_date, market, symbol, filled, reason
-                )
+    # ── Tracker ──────────────────────────────────────
+
+    def _record_bar_snapshot(
+        self,
+        symbol: str,
+        bar_num: int,
+        close_price: float,
+        dt: datetime,
+        signal,
+        action: str,
+        reason: str,
+        trade_strike: float,
+        trade_fill_price: float,
+    ) -> None:
+        """Record a bar snapshot to the tracker if available."""
+        if not self.tracker:
+            return
+
+        puts = self._get_puts(symbol)
+        pos_qty = sum(p.quantity for p in puts)
+        pos_avg_entry = puts[0].avg_entry_price if puts else 0.0
+        pos_mark_price = puts[0].current_price if puts else 0.0
+
+        # For SELL actions, position is already closed — use last sell order info
+        if action == "SELL_PUT" and not puts and self._sell_orders[symbol]:
+            last_sell = self._sell_orders[symbol][-1]
+            trade_strike = last_sell.contract.strike
+            trade_fill_price = last_sell.fill_price
+
+        self.tracker.record_bar(
+            timestamp=dt,
+            symbol=symbol,
+            bar_num=bar_num,
+            underlying_close=close_price,
+            signal=signal.signal_type.value,
+            peak_prob=signal.peak_prob,
+            trough_prob=signal.trough_prob,
+            action=action,
+            reason=reason,
+            strike=trade_strike,
+            fill_price=trade_fill_price,
+            position_qty=pos_qty,
+            position_avg_entry=pos_avg_entry,
+            position_mark_price=pos_mark_price,
+            cash=self.broker.get_cash_balance(),
+        )
 
     # ── Summary ──────────────────────────────────────
 
@@ -342,12 +408,6 @@ class TradingEngine:
                     timestamp=datetime.now(),
                     details=summary,
                 ))
-
-            # DB record
-            if self.trade_db and session_date:
-                self.trade_db.record_daily_summary(
-                    session_date, market, symbol, summary,
-                )
 
             combined[symbol] = summary
 

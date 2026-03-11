@@ -50,10 +50,14 @@ class SignalDetector:
         market: str,
         model_type: str = "gbm",
         threshold: float = 0.5,
+        label_config: str = "L2",
+        model_config: str = "M3",
     ):
         self.market = market
         self.model_type = model_type
         self.threshold = threshold
+        self.label_config = label_config
+        self.model_config = model_config
         self._peak_model = None
         self._trough_model = None
         self._feature_cols: Optional[list[str]] = None
@@ -63,7 +67,7 @@ class SignalDetector:
         if self._peak_model is not None:
             return
 
-        models_dir = DATA_DIR / "models"
+        models_dir = DATA_DIR / "models" / self.label_config / self.model_config
 
         if self.model_type == "gbm":
             from src.model.train_gbm import load_model
@@ -74,7 +78,8 @@ class SignalDetector:
             if not peak_path.exists() or not trough_path.exists():
                 raise FileNotFoundError(
                     f"Model files not found at {models_dir}. "
-                    f"Train first: ./optionmeme model --market {self.market} --model gbm"
+                    f"Train first: ./optionmeme model --market {self.market} --model gbm "
+                    f"--label-config {self.label_config} --model-config {self.model_config}"
                 )
 
             self._peak_model = load_model(peak_path)

@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 RAW_STOCK_DIR = RAW_DIR / "stock"
+RAW_OPTIONS_DIR = RAW_DIR / "options"
 PROCESSED_DIR = DATA_DIR / "processed"
 LABELED_DIR = PROCESSED_DIR / "labeled"
 LABELED_MANUAL_DIR = PROCESSED_DIR / "labeled_manual"

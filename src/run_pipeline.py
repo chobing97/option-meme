@@ -856,36 +856,114 @@ def run_trade(
     model_type: str = "gbm",
     threshold: float = 0.5,
     date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     quantity: int = 1,
+    broker_type: str = "mock",
+    label_config: str = "L2",
+    model_config: str = "M3",
 ) -> None:
-    """Run mock trading simulation for one or more symbols."""
+    """Run trading simulation for one or more symbols.
+
+    Single-day: --date YYYY-MM-DD (or latest if omitted and no --date-from)
+    Multi-day:  --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
+    """
     from src.trading.broker.mock_broker import MockBroker
-    from src.trading.datafeed.mock_feed import MockDataFeed
+    from src.trading.broker.historical_broker import HistoricalBroker
+    from src.trading.datafeed.historical_feed import HistoricalDataFeed
     from src.trading.engine import TradingEngine
     from src.trading.notifier.console import ConsoleNotifier
     from src.trading.signal_detector import SignalDetector
-    from src.trading.trade_db import TradeDB
+    from src.trading.trade_tracker import TradeTracker
 
-    feeds = {
-        symbol: MockDataFeed(market=market, symbol=symbol, date=date)
-        for symbol in symbols
-    }
-    broker = MockBroker()
-    detector = SignalDetector(market=market, model_type=model_type, threshold=threshold)
-    notifiers = [ConsoleNotifier()]
-    trade_db = TradeDB()
+    # Determine replay dates
+    if date_from:
+        early_data = {}
+        all_dates = None
+        for symbol in symbols:
+            early_df, dates = HistoricalDataFeed.get_available_dates(
+                market, symbol, date_from=date_from, date_to=date_to,
+            )
+            early_data[symbol] = early_df
+            if all_dates is None:
+                all_dates = set(dates)
+            else:
+                all_dates &= set(dates)
+        replay_dates = sorted(all_dates)
+    elif date:
+        replay_dates = [date]
+        early_data = {s: None for s in symbols}
+    else:
+        replay_dates = [None]  # None = latest available
+        early_data = {s: None for s in symbols}
 
-    engine = TradingEngine(
-        feeds=feeds,
-        broker=broker,
-        detector=detector,
-        symbols=symbols,
-        quantity=quantity,
-        notifiers=notifiers,
-        trade_db=trade_db,
+    if not replay_dates:
+        logger.warning("No trading dates found in the given range")
+        return
+
+    # Shared state across all days
+    if broker_type == "historical":
+        broker = HistoricalBroker(market=market)
+        broker.load_symbols(symbols)
+    else:
+        broker = MockBroker()
+
+    detector = SignalDetector(
+        market=market, model_type=model_type, threshold=threshold,
+        label_config=label_config, model_config=model_config,
     )
-    engine.run()
-    trade_db.close()
+    tracker = TradeTracker()
+
+    multi_day = date_from is not None
+    if multi_day:
+        print(f"\n=== Multi-day backtest: {len(replay_dates)} days ===")
+        print(f"Period: {replay_dates[0]} ~ {replay_dates[-1]}")
+        print(f"Symbols: {', '.join(symbols)}\n")
+
+    for day_date in replay_dates:
+        feeds = {
+            symbol: HistoricalDataFeed(
+                market=market, symbol=symbol, date=day_date,
+                early_df=early_data.get(symbol),
+            )
+            for symbol in symbols
+        }
+
+        engine = TradingEngine(
+            feeds=feeds,
+            broker=broker,
+            detector=detector,
+            symbols=symbols,
+            quantity=quantity,
+            notifiers=[ConsoleNotifier()] if not multi_day else [],
+            tracker=tracker,
+        )
+        result = engine.run()
+
+        if multi_day:
+            for sym in symbols:
+                s = result.get(sym, {})
+                buys, sells = s.get("buys", 0), s.get("sells", 0)
+                pnl = s.get("net_pnl", 0)
+                cash = s.get("cash_balance", 0)
+                print(
+                    f"  [{day_date}] {sym}: "
+                    f"buys={buys} sells={sells} pnl={pnl:+,.0f} cash={cash:,.0f}"
+                )
+
+    # Save tracker & print summary
+    if tracker:
+        date_label = f"{replay_dates[0]}_{replay_dates[-1]}" if multi_day else (replay_dates[0] or "latest")
+        tracker.save(date_label)
+        summary = tracker.summary()
+        if summary:
+            ret = summary.get("return_pct", 0)
+            mdd = summary.get("max_drawdown_pct", 0)
+            print(f"\n=== Backtest Summary ===")
+            print(f"Period: {replay_dates[0] or 'latest'} ~ {replay_dates[-1] or 'latest'} ({len(replay_dates)} days)")
+            print(f"Return: {ret:+.2%} | Max drawdown: {mdd:.2%}")
+            print(f"Final equity: {summary.get('final_equity', 0):,.0f}")
+
 
 
 # ── CLI ──────────────────────────────────────────────────
@@ -980,6 +1058,24 @@ examples:
         type=int,
         default=1,
         help="Number of option contracts per trade (trade only, default: 1)",
+    )
+    parser.add_argument(
+        "--date-from",
+        type=str,
+        default=None,
+        help="Backtest start date YYYY-MM-DD (trade only, enables multi-day mode)",
+    )
+    parser.add_argument(
+        "--date-to",
+        type=str,
+        default=None,
+        help="Backtest end date YYYY-MM-DD (trade only, default: latest)",
+    )
+    parser.add_argument(
+        "--broker",
+        choices=["mock", "historical"],
+        default="mock",
+        help="Broker type for trading: mock (Black-Scholes) or historical (real OHLCV) (default: mock)",
     )
     parser.add_argument(
         "--optimize",
@@ -1077,13 +1173,21 @@ def main() -> None:
                 parser.error("trade stage requires --symbol")
             if args.market == "all":
                 parser.error("trade stage requires a specific --market (kr or us)")
+            model_type = args.model_type if args.model_type != "all" else "gbm"
+            label_config = args.label_config if args.label_config != "all" else "L2"
+            model_config = args.model_config if args.model_config != "all" else "M3"
             run_trade(
                 market=args.market,
                 symbols=args.symbol,
-                model_type=args.model_type,
+                model_type=model_type,
                 threshold=args.threshold,
                 date=args.date,
+                date_from=args.date_from,
+                date_to=args.date_to,
                 quantity=args.quantity,
+                broker_type=args.broker,
+                label_config=label_config,
+                model_config=model_config,
             )
 
     except KeyboardInterrupt:
