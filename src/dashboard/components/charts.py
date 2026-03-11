@@ -308,6 +308,248 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
     return fig
 
 
+def make_candlestick_with_options(
+    stock_df: pd.DataFrame, option_df: pd.DataFrame, title: str = "OHLCV + Options",
+) -> go.Figure:
+    """Candlestick chart with stock price (top) + option price line (bottom)."""
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        vertical_spacing=0.03, row_heights=[0.55, 0.25, 0.20],
+        subplot_titles=["Stock Price", "Volume", "Option Price"],
+    )
+
+    # Row 1: Stock candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=stock_df["datetime"],
+            open=stock_df["open"], high=stock_df["high"],
+            low=stock_df["low"], close=stock_df["close"],
+            name="Stock OHLC",
+        ),
+        row=1, col=1,
+    )
+
+    # Row 2: Volume
+    colors = _vol_colors(stock_df)
+    fig.add_trace(
+        go.Bar(
+            x=stock_df["datetime"], y=stock_df["volume"],
+            marker_color=colors, name="Volume", opacity=0.6,
+        ),
+        row=2, col=1,
+    )
+
+    # Row 3: Option candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=option_df["datetime"],
+            open=option_df["open"], high=option_df["high"],
+            low=option_df["low"], close=option_df["close"],
+            name="Option OHLC",
+        ),
+        row=3, col=1,
+    )
+
+    contract_info = option_df.attrs.get("contract_info", "")
+    if contract_info:
+        fig.update_yaxes(title_text=contract_info, row=3, col=1)
+    else:
+        fig.update_yaxes(title_text="Option $", row=3, col=1)
+
+    fig.update_layout(
+        title=title,
+        xaxis_rangeslider_visible=False,
+        height=700,
+        margin=dict(l=40, r=20, t=40, b=20),
+        showlegend=False,
+    )
+    fig.update_xaxes(rangebreaks=_trading_rangebreaks(stock_df))
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    return fig
+
+
+def make_backtest_chart(df: pd.DataFrame, title: str = "Backtest") -> go.Figure:
+    """4-row subplot: price+trades, model probs, option position, equity+drawdown.
+
+    All rows share x-axis for synchronized zoom/pan.
+    """
+    fig = make_subplots(
+        rows=4, cols=1, shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.35, 0.15, 0.20, 0.30],
+        subplot_titles=["Underlying Price", "Model Probability", "Option Position", "Equity & Drawdown"],
+    )
+
+    # ── Row 1: Underlying price line + signal markers + trade markers ──
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["underlying_close"],
+            mode="lines", name="Underlying",
+            line=dict(color="#78909c", width=1.5),
+        ),
+        row=1, col=1,
+    )
+
+    # Signal markers (small, semi-transparent)
+    peaks = df[df["signal"] == "PEAK"]
+    troughs = df[df["signal"] == "TROUGH"]
+    if not peaks.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=peaks["timestamp"], y=peaks["underlying_close"],
+                mode="markers", name="Peak Signal",
+                marker=dict(symbol="circle", size=6, color="rgba(239,83,80,0.4)"),
+                hovertemplate="PEAK<br>%{x}<br>price: %{y:,.2f}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+    if not troughs.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=troughs["timestamp"], y=troughs["underlying_close"],
+                mode="markers", name="Trough Signal",
+                marker=dict(symbol="circle", size=6, color="rgba(38,166,154,0.4)"),
+                hovertemplate="TROUGH<br>%{x}<br>price: %{y:,.2f}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+
+    # Trade markers (large, solid)
+    buys = df[df["action"] == "BUY_PUT"]
+    sells = df[df["action"] == "SELL_PUT"]
+    if not buys.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buys["timestamp"], y=buys["underlying_close"],
+                mode="markers", name="BUY PUT",
+                marker=dict(symbol="triangle-up", size=12, color="#26a69a", line=dict(width=1, color="white")),
+                customdata=np.column_stack([buys["strike"], buys["fill_price"], buys["reason"]]) if len(buys) > 0 else None,
+                hovertemplate="BUY PUT<br>%{x}<br>price: %{y:,.2f}<br>strike: %{customdata[0]}<br>fill: %{customdata[1]:.4f}<br>reason: %{customdata[2]}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+    if not sells.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sells["timestamp"], y=sells["underlying_close"],
+                mode="markers", name="SELL PUT",
+                marker=dict(symbol="triangle-down", size=12, color="#ef5350", line=dict(width=1, color="white")),
+                customdata=np.column_stack([sells["strike"], sells["fill_price"], sells["reason"]]) if len(sells) > 0 else None,
+                hovertemplate="SELL PUT<br>%{x}<br>price: %{y:,.2f}<br>strike: %{customdata[0]}<br>fill: %{customdata[1]:.4f}<br>reason: %{customdata[2]}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+
+    # ── Row 2: Model probabilities ──
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["peak_prob"],
+            mode="lines", name="Peak Prob",
+            line=dict(color="#ef5350", width=1.2),
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["trough_prob"],
+            mode="lines", name="Trough Prob",
+            line=dict(color="#26a69a", width=1.2),
+        ),
+        row=2, col=1,
+    )
+    fig.add_hline(y=0.5, line_dash="dash", line_color="#bdbdbd", row=2, col=1)
+
+    # ── Row 3: Option position value ──
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["position_mark_price"],
+            mode="lines", name="Option Price",
+            line=dict(color="#ab47bc", width=1.2),
+            fill="tozeroy", fillcolor="rgba(171,71,188,0.1)",
+        ),
+        row=3, col=1,
+    )
+    # Entry/exit on option chart
+    if not buys.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buys["timestamp"], y=buys["fill_price"],
+                mode="markers", name="Entry",
+                marker=dict(symbol="triangle-up", size=9, color="#26a69a"),
+                showlegend=False,
+                hovertemplate="Entry: %{y:.4f}<extra></extra>",
+            ),
+            row=3, col=1,
+        )
+    if not sells.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sells["timestamp"], y=sells["fill_price"],
+                mode="markers", name="Exit",
+                marker=dict(symbol="triangle-down", size=9, color="#ef5350"),
+                showlegend=False,
+                hovertemplate="Exit: %{y:.4f}<extra></extra>",
+            ),
+            row=3, col=1,
+        )
+
+    # ── Row 4: Equity curve + drawdown ──
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["equity"],
+            mode="lines", name="Equity",
+            line=dict(color="#42a5f5", width=1.5),
+        ),
+        row=4, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"], y=df["drawdown_pct"] * 100,
+            mode="lines", name="Drawdown %",
+            line=dict(color="#ef5350", width=1),
+            fill="tozeroy", fillcolor="rgba(239,83,80,0.15)",
+            yaxis="y8",
+        ),
+        row=4, col=1,
+    )
+
+    # ── Day separators (vertical lines for multi-day) ──
+    if "timestamp" in df.columns:
+        dates = df["timestamp"].dt.date.unique()
+        if len(dates) > 1:
+            for d in dates[1:]:
+                first_ts = df[df["timestamp"].dt.date == d]["timestamp"].iloc[0]
+                for row_num in range(1, 5):
+                    fig.add_vline(
+                        x=first_ts, line_dash="dot", line_color="rgba(150,150,150,0.3)",
+                        row=row_num, col=1,
+                    )
+
+    # ── Layout ──
+    fig.update_layout(
+        title=title,
+        height=900,
+        margin=dict(l=50, r=20, t=60, b=30),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+    )
+
+    # Rangebreaks for trading gaps
+    breaks = _trading_rangebreaks(df.rename(columns={"timestamp": "datetime"}))
+    for i in range(1, 5):
+        fig.update_xaxes(rangebreaks=breaks, row=i, col=1)
+
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Prob", range=[0, 1], row=2, col=1)
+    fig.update_yaxes(title_text="Option $", row=3, col=1)
+    fig.update_yaxes(title_text="Equity", row=4, col=1)
+
+    return fig
+
+
 def make_label_distribution(label_counts: dict) -> go.Figure:
     """Pie + bar chart for label distribution."""
     label_map = {0: "Neither", 1: "Peak", 2: "Trough"}

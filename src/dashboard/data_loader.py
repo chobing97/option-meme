@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_STOCK_DIR
+from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_OPTIONS_DIR, RAW_STOCK_DIR
 
 import logging
 
@@ -156,6 +156,81 @@ def get_raw_summary(market: str) -> dict:
     }
 
 
+# ── Options OHLCV ────────────────────────────────────────
+
+
+@st.cache_data(show_spinner=False)
+def has_options_data(market: str, symbol: str) -> bool:
+    """Check if options OHLCV data exists for a symbol."""
+    sym_dir = RAW_OPTIONS_DIR / market / symbol
+    return sym_dir.exists() and any(sym_dir.glob("*.parquet"))
+
+
+@st.cache_data(show_spinner="Loading options data...")
+def load_options_ohlcv(market: str, symbol: str, date_str: str) -> pd.DataFrame:
+    """Load options OHLCV for a symbol on a specific date.
+
+    Returns DataFrame with ATM contract's minute bars for that day.
+    Selects the contract whose strike is closest to the stock close price.
+    """
+    sym_dir = RAW_OPTIONS_DIR / market / symbol
+    if not sym_dir.exists():
+        return pd.DataFrame()
+
+    contracts_path = sym_dir / "contracts.parquet"
+    if not contracts_path.exists():
+        return pd.DataFrame()
+
+    contracts = pd.read_parquet(contracts_path)
+    contracts["period_start"] = pd.to_datetime(contracts["period_start"])
+    contracts["expiry"] = pd.to_datetime(contracts["expiry"])
+
+    target_date = pd.Timestamp(date_str)
+
+    # Find active contract: period_start <= date < expiry
+    active = contracts[
+        (contracts["period_start"] <= target_date)
+        & (contracts["expiry"] > target_date)
+    ]
+    if active.empty:
+        return pd.DataFrame()
+
+    # Pick ATM put (closest strike to stock_close)
+    puts = active[active["cp"] == "P"]
+    if puts.empty:
+        puts = active  # fallback to any type
+    atm = puts.iloc[(puts["strike"] - puts["stock_close"]).abs().argsort()[:1]]
+    contract_symbol = atm["symbol"].iloc[0].strip()
+
+    # Load only the relevant year's OHLCV file with row-level filter
+    year_file = sym_dir / f"{target_date.year}.parquet"
+    if not year_file.exists():
+        return pd.DataFrame()
+
+    day_start = pd.Timestamp(target_date.date())
+    day_end = day_start + pd.Timedelta(days=1)
+    ohlcv = pd.read_parquet(
+        year_file,
+        filters=[
+            ("symbol", "==", atm["symbol"].iloc[0]),  # exact match (padded)
+            ("datetime", ">=", day_start),
+            ("datetime", "<", day_end),
+        ],
+    )
+    if ohlcv.empty:
+        return pd.DataFrame()
+
+    ohlcv["datetime"] = pd.to_datetime(ohlcv["datetime"])
+    result = ohlcv.sort_values("datetime").reset_index(drop=True)
+
+    if not result.empty:
+        strike = float(atm["strike"].iloc[0])
+        expiry = atm["expiry"].iloc[0].strftime("%Y-%m-%d")
+        result.attrs["contract_info"] = f"Put K={strike:.0f} Exp={expiry}"
+
+    return result
+
+
 # ── Labeled data ──────────────────────────────────────────
 
 
@@ -281,6 +356,37 @@ def load_split_dates(market: str, label_config: str, model_config: str) -> dict[
 
 
 # ── Featured data ─────────────────────────────────────────
+
+
+# ── Backtest data ────────────────────────────────────────
+
+
+BACKTEST_DIR = DATA_DIR / "trading" / "backtests"
+
+
+@st.cache_data(show_spinner=False)
+def get_backtest_files() -> list[str]:
+    """List available backtest parquet files (stem names)."""
+    if not BACKTEST_DIR.exists():
+        return []
+    return sorted(
+        (p.stem for p in BACKTEST_DIR.glob("*.parquet")),
+        reverse=True,
+    )
+
+
+@st.cache_data(show_spinner="Loading backtest data...")
+def load_backtest(name: str) -> pd.DataFrame:
+    """Load a backtest parquet file by stem name."""
+    path = BACKTEST_DIR / f"{name}.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+# ── Feature data ─────────────────────────────────────────
 
 
 @st.cache_data(show_spinner="Loading feature columns...")

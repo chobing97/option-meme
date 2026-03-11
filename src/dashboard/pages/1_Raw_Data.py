@@ -11,12 +11,15 @@ from datetime import timedelta
 
 import streamlit as st
 
-from dashboard.components.charts import make_candlestick
+from dashboard.components.charts import make_candlestick, make_candlestick_with_options
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
     market_selector, reload_button, symbol_selector,
 )
-from dashboard.data_loader import get_raw_date_range, get_raw_symbols, get_raw_trading_dates, get_stock_name_map, load_raw_bars
+from dashboard.data_loader import (
+    get_raw_date_range, get_raw_symbols, get_raw_trading_dates, get_stock_name_map,
+    has_options_data, load_options_ohlcv, load_raw_bars,
+)
 
 st.set_page_config(page_title="Raw Data", layout="wide")
 st.title("Phase 0: Raw OHLCV Data")
@@ -81,15 +84,32 @@ day_df = load_raw_bars(market, symbol, str(selected_date), str(next_day))
 if day_df.empty:
     st.info(f"No data for {selected_date}")
 else:
-    st.plotly_chart(
-        make_candlestick(day_df, f"{stock_label} ({market.upper()}) — {selected_date}"),
-        use_container_width=True,
-    )
+    chart_title = f"{stock_label} ({market.upper()}) — {selected_date}"
 
-# ── Data table (selected day) ────────────────────────────
+    # Check for options data
+    option_df = None
+    if has_options_data(market, symbol):
+        option_df = load_options_ohlcv(market, symbol, str(selected_date))
+        if option_df is not None and not option_df.empty:
+            st.plotly_chart(
+                make_candlestick_with_options(day_df, option_df, chart_title),
+                use_container_width=True,
+            )
+        else:
+            option_df = None
+            st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
+    else:
+        st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
 
-with st.expander(f"Raw Data Table ({selected_date})"):
+# ── Data tables (selected day) ───────────────────────────
+
+with st.expander(f"Stock Data Table ({selected_date})"):
     if not day_df.empty:
         st.dataframe(day_df, use_container_width=True, height=400)
     else:
         st.info("No data.")
+
+if option_df is not None and not option_df.empty:
+    contract_info = option_df.attrs.get("contract_info", "Option")
+    with st.expander(f"Option Data Table — {contract_info} ({selected_date})"):
+        st.dataframe(option_df, use_container_width=True, height=400)
