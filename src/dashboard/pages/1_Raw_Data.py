@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import streamlit as st
 
-from dashboard.components.charts import make_candlestick, make_candlestick_with_options
+from dashboard.components.charts import make_candlestick, make_option_candlestick
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
     market_selector, reload_button, symbol_selector,
@@ -70,12 +70,15 @@ cols[3].metric("To", str(end))
 
 # ── Per-day chart with date slider ────────────────────────
 
-st.subheader(f"Intraday Chart — {stock_label}")
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 kb_nav_apply_date(kb_dir, dates, "raw_chart_date")
 selected_date = st.select_slider(
     "Date", options=dates, value=dates[-1], key="raw_chart_date",
 )
+
+day_name = DAY_NAMES[selected_date.weekday()]
+st.subheader(f"Intraday Chart — {stock_label} — {selected_date} ({day_name})")
 
 # Load only 1 day of data (end_date + 1 day because storage filters with <=)
 next_day = selected_date + timedelta(days=1)
@@ -84,22 +87,24 @@ day_df = load_raw_bars(market, symbol, str(selected_date), str(next_day))
 if day_df.empty:
     st.info(f"No data for {selected_date}")
 else:
-    chart_title = f"{stock_label} ({market.upper()}) — {selected_date}"
+    chart_title = f"{stock_label} ({market.upper()}) — {selected_date} ({day_name})"
 
-    # Check for options data
+    # Stock chart
+    st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
+
+    # Option chart (separate figure, x-axis aligned by same date)
     option_df = None
     if has_options_data(market, symbol):
         option_df = load_options_ohlcv(market, symbol, str(selected_date))
         if option_df is not None and not option_df.empty:
+            contract_info = option_df.attrs.get("contract_info", "Option")
+            option_title = f"{contract_info} — {selected_date}"
             st.plotly_chart(
-                make_candlestick_with_options(day_df, option_df, chart_title),
+                make_option_candlestick(option_df, option_title, stock_df=day_df),
                 use_container_width=True,
             )
         else:
             option_df = None
-            st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
-    else:
-        st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
 
 # ── Data tables (selected day) ───────────────────────────
 

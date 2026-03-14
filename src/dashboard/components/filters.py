@@ -145,6 +145,20 @@ def kb_nav_apply_symbol(direction: str | None, symbols: list, symbol_key: str, d
     st.session_state.pop(date_key, None)
 
 
+def kb_nav_apply_selectbox(direction: str | None, options: list, key: str, axes: tuple[str, str] = ("up", "down")) -> None:
+    """Handle keyboard nav for a sidebar selectbox. Must be called BEFORE the selectbox."""
+    if direction not in axes or not options:
+        return
+    cur = st.session_state.get(key, options[0])
+    try:
+        idx = list(options).index(cur)
+    except ValueError:
+        idx = 0
+    idx += -1 if direction == axes[0] else 1
+    idx = max(0, min(idx, len(options) - 1))
+    st.session_state[key] = options[idx]
+
+
 def kb_nav_apply_date(direction: str | None, dates: list, date_key: str) -> None:
     """Handle ←→: change date. Must be called BEFORE select_slider."""
     if direction not in ("left", "right") or not dates:

@@ -10,11 +10,20 @@ if str(PROJECT_ROOT) not in sys.path:
 import streamlit as st
 
 from dashboard.components.charts import make_backtest_chart
-from dashboard.components.filters import reload_button
-from dashboard.data_loader import get_backtest_files, load_backtest
+from dashboard.components.filters import kb_nav_apply_date, kb_nav_apply_selectbox, kb_nav_read, reload_button
+from datetime import timedelta
+
+from dashboard.data_loader import (
+    get_backtest_files, get_backtest_symbols, get_backtest_trading_dates,
+    has_options_data, load_backtest, load_options_ohlcv_by_strike, load_raw_bars,
+)
 
 st.set_page_config(page_title="Backtest", layout="wide")
 st.title("Phase 6: Backtest Results")
+
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+kb_dir = kb_nav_read()
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -28,36 +37,40 @@ if not files:
     )
     st.stop()
 
+kb_nav_apply_selectbox(kb_dir, files, "bt_file")
 selected = st.sidebar.selectbox("Backtest", files, key="bt_file")
-df = load_backtest(selected)
 
-if df.empty:
+# Symbol filter (lightweight)
+symbols = get_backtest_symbols(selected)
+if not symbols:
     st.warning("Selected backtest file is empty.")
     st.stop()
 
-# Symbol filter
-symbols = sorted(df["symbol"].unique().tolist())
 if len(symbols) > 1:
     symbol = st.sidebar.selectbox("Symbol", symbols, key="bt_symbol")
 else:
     symbol = symbols[0]
 
-sym_df = df[df["symbol"] == symbol].copy()
+# Trading dates (lightweight)
+dates = get_backtest_trading_dates(selected, symbol)
+if not dates:
+    st.warning(f"No data for {symbol}.")
+    st.stop()
 
-# Date filter for multi-day
-dates = sorted(sym_df["timestamp"].dt.date.unique())
+# Date slider (skip slider if only 1 date to avoid Streamlit min==max bug)
+kb_nav_apply_date(kb_dir, dates, "bt_chart_date")
 if len(dates) > 1:
-    date_options = ["All"] + [str(d) for d in dates]
-    selected_date = st.sidebar.selectbox("Date", date_options, key="bt_date")
-    if selected_date != "All":
-        import datetime
-        sel_date = datetime.date.fromisoformat(selected_date)
-        day_df = sym_df[sym_df["timestamp"].dt.date == sel_date]
-    else:
-        day_df = sym_df
+    selected_date = st.select_slider("Date", options=dates, value=dates[-1], key="bt_chart_date")
 else:
-    day_df = sym_df
-    selected_date = str(dates[0]) if dates else "N/A"
+    selected_date = dates[0]
+day_name = DAY_NAMES[selected_date.weekday()]
+
+# Load only selected symbol + date
+day_df = load_backtest(selected, symbol=symbol, date_str=str(selected_date))
+
+if day_df.empty:
+    st.info(f"No data for {selected_date}")
+    st.stop()
 
 # ── KPI Summary ──────────────────────────────────────────
 
@@ -70,7 +83,6 @@ final_equity = day_df["equity"].iloc[-1] if len(day_df) > 0 else 0
 return_pct = (final_equity - initial_equity) / initial_equity if initial_equity > 0 else 0
 max_dd = day_df["drawdown_pct"].min() if len(day_df) > 0 else 0
 
-# Win rate: match buys and sells by looking at equity change around trades
 sell_reasons = sells["reason"].value_counts().to_dict() if not sells.empty else {}
 
 cols = st.columns(6)
@@ -81,17 +93,27 @@ cols[3].metric("Return", f"{return_pct:+.2%}")
 cols[4].metric("Max Drawdown", f"{max_dd:.2%}")
 cols[5].metric("Final Equity", f"{final_equity:,.0f}")
 
-# Sell reason breakdown
 if sell_reasons:
     reason_cols = st.columns(len(sell_reasons))
     for i, (reason, count) in enumerate(sorted(sell_reasons.items())):
         reason_cols[i].metric(reason.replace("_", " ").title(), count)
 
+# ── Load real OHLCV data for candlestick charts ──────────
+
+# Stock OHLCV
+next_day = selected_date + timedelta(days=1)
+stock_ohlcv = load_raw_bars("us", symbol, str(selected_date), str(next_day))
+
+# Option OHLCV
+option_ohlcv = None
+if not buys.empty and has_options_data("us", symbol):
+    trade_strike = buys["strike"].iloc[0]
+    option_ohlcv = load_options_ohlcv_by_strike("us", symbol, str(selected_date), trade_strike)
+
 # ── Main Chart ───────────────────────────────────────────
 
-period_label = selected_date if selected_date != "All" else selected
-chart_title = f"{symbol} — {period_label}"
-fig = make_backtest_chart(day_df, title=chart_title)
+chart_title = f"{symbol} — {selected_date} ({day_name})"
+fig = make_backtest_chart(day_df, title=chart_title, stock_ohlcv=stock_ohlcv, option_ohlcv=option_ohlcv)
 st.plotly_chart(fig, use_container_width=True)
 
 # ── Trade History Table ──────────────────────────────────
@@ -110,32 +132,3 @@ else:
     trade_display["cash"] = trade_display["cash"].map("{:,.0f}".format)
     trade_display["equity"] = trade_display["equity"].map("{:,.0f}".format)
     st.dataframe(trade_display, use_container_width=True, hide_index=True)
-
-# ── Daily Summary (multi-day only) ───────────────────────
-
-if len(dates) > 1 and selected_date == "All":
-    st.subheader("Daily Summary")
-    daily_rows = []
-    for d in dates:
-        ddf = sym_df[sym_df["timestamp"].dt.date == d]
-        if ddf.empty:
-            continue
-        d_buys = len(ddf[ddf["action"] == "BUY_PUT"])
-        d_sells = len(ddf[ddf["action"] == "SELL_PUT"])
-        d_start = ddf["equity"].iloc[0]
-        d_end = ddf["equity"].iloc[-1]
-        d_ret = (d_end - d_start) / d_start if d_start > 0 else 0
-        d_dd = ddf["drawdown_pct"].min()
-        daily_rows.append({
-            "date": str(d),
-            "bars": len(ddf),
-            "buys": d_buys,
-            "sells": d_sells,
-            "return": f"{d_ret:+.2%}",
-            "max_dd": f"{d_dd:.2%}",
-            "end_equity": f"{d_end:,.0f}",
-        })
-
-    if daily_rows:
-        import pandas as pd
-        st.dataframe(pd.DataFrame(daily_rows), use_container_width=True, hide_index=True)

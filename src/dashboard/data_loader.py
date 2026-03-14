@@ -231,6 +231,68 @@ def load_options_ohlcv(market: str, symbol: str, date_str: str) -> pd.DataFrame:
     return result
 
 
+@st.cache_data(show_spinner=False)
+def load_options_ohlcv_by_strike(
+    market: str, symbol: str, date_str: str, strike: float, cp: str = "P",
+) -> pd.DataFrame:
+    """Load options OHLCV for a specific strike on a given date.
+
+    Finds the contract matching the strike + cp (put/call) that is active
+    on the target date and returns its minute bars.
+    """
+    sym_dir = RAW_OPTIONS_DIR / market / symbol
+    if not sym_dir.exists():
+        return pd.DataFrame()
+
+    contracts_path = sym_dir / "contracts.parquet"
+    if not contracts_path.exists():
+        return pd.DataFrame()
+
+    contracts = pd.read_parquet(contracts_path)
+    contracts["period_start"] = pd.to_datetime(contracts["period_start"])
+    contracts["expiry"] = pd.to_datetime(contracts["expiry"])
+
+    target_date = pd.Timestamp(date_str)
+
+    # Find active contract matching strike and cp
+    match = contracts[
+        (contracts["strike"] == strike)
+        & (contracts["cp"] == cp)
+        & (contracts["period_start"] <= target_date)
+        & (contracts["expiry"] > target_date)
+    ]
+    if match.empty:
+        return pd.DataFrame()
+
+    contract_row = match.iloc[0]
+
+    year_file = sym_dir / f"{target_date.year}.parquet"
+    if not year_file.exists():
+        return pd.DataFrame()
+
+    day_start = pd.Timestamp(target_date.date())
+    day_end = day_start + pd.Timedelta(days=1)
+    ohlcv = pd.read_parquet(
+        year_file,
+        filters=[
+            ("symbol", "==", contract_row["symbol"]),
+            ("datetime", ">=", day_start),
+            ("datetime", "<", day_end),
+        ],
+    )
+    if ohlcv.empty:
+        return pd.DataFrame()
+
+    ohlcv["datetime"] = pd.to_datetime(ohlcv["datetime"])
+    result = ohlcv.sort_values("datetime").reset_index(drop=True)
+
+    if not result.empty:
+        expiry = contract_row["expiry"].strftime("%Y-%m-%d")
+        result.attrs["contract_info"] = f"Put K={strike:.0f} Exp={expiry}"
+
+    return result
+
+
 # ── Labeled data ──────────────────────────────────────────
 
 
@@ -242,14 +304,65 @@ def _load_manual_overrides(market: str, label_config: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
+@st.cache_data(show_spinner=False)
+def get_labeled_symbols(market: str, label_config: str) -> list[str]:
+    """Return sorted symbol list from labeled parquet (lightweight — symbol column only)."""
+    path = _labeled_path(market, label_config)
+    if not path.exists():
+        return []
+    df = pd.read_parquet(path, columns=["symbol"])
+    return sorted(df["symbol"].unique().tolist())
+
+
+@st.cache_data(show_spinner=False)
+def get_labeled_date_range(market: str, label_config: str, symbol: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """Return (min, max) datetime for a symbol in labeled data."""
+    path = _labeled_path(market, label_config)
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path, columns=["symbol", "datetime"], filters=[("symbol", "==", symbol)])
+    if df.empty:
+        return None
+    return df["datetime"].min(), df["datetime"].max()
+
+
+@st.cache_data(show_spinner=False)
+def get_labeled_trading_dates(market: str, label_config: str, symbol: str) -> list:
+    """Return sorted list of trading dates for a symbol."""
+    path = _labeled_path(market, label_config)
+    if not path.exists():
+        return []
+    df = pd.read_parquet(path, columns=["symbol", "date"], filters=[("symbol", "==", symbol)])
+    if df.empty:
+        return []
+    return sorted(df["date"].unique().tolist())
+
+
+@st.cache_data(show_spinner=False)
+def get_labeled_symbol_stats(market: str, label_config: str, symbol: str) -> dict:
+    """Return label counts for a symbol (lightweight — label column only)."""
+    path = _labeled_path(market, label_config)
+    if not path.exists():
+        return {}
+    df = pd.read_parquet(path, columns=["symbol", "label"], filters=[("symbol", "==", symbol)])
+    return df["label"].value_counts().to_dict()
+
+
 @st.cache_data(show_spinner="Loading labeled data...")
-def load_labeled(market: str, label_config: str) -> pd.DataFrame:
-    """Load auto-generated labels, then overlay manual overrides."""
+def load_labeled(market: str, label_config: str, symbol: str | None = None, date_str: str | None = None) -> pd.DataFrame:
+    """Load labeled data with optional symbol/date filtering via pyarrow pushdown."""
     path = _labeled_path(market, label_config)
     if not path.exists():
         return pd.DataFrame()
 
-    df = pd.read_parquet(path)
+    filters = []
+    if symbol is not None:
+        filters.append(("symbol", "==", symbol))
+    if date_str is not None:
+        import datetime
+        filters.append(("date", "==", datetime.date.fromisoformat(date_str)))
+
+    df = pd.read_parquet(path, filters=filters if filters else None)
     if df.empty:
         return df
 
@@ -257,8 +370,13 @@ def load_labeled(market: str, label_config: str) -> pd.DataFrame:
     if manual.empty:
         return df
 
-    # Align datetime dtype for merge
+    # Filter manual overrides to match
     manual["datetime"] = pd.to_datetime(manual["datetime"])
+    if symbol is not None:
+        manual = manual[manual["symbol"] == symbol]
+    if manual.empty:
+        return df
+
     key = ["symbol", "datetime"]
     merged = df.merge(manual[key + ["label"]], on=key, how="left", suffixes=("", "_manual"))
     has_override = merged["label_manual"].notna()
@@ -375,14 +493,42 @@ def get_backtest_files() -> list[str]:
     )
 
 
+@st.cache_data(show_spinner=False)
+def get_backtest_symbols(name: str) -> list[str]:
+    """Return sorted symbol list from a backtest file."""
+    path = BACKTEST_DIR / f"{name}.parquet"
+    if not path.exists():
+        return []
+    df = pd.read_parquet(path, columns=["symbol"])
+    return sorted(df["symbol"].unique().tolist())
+
+
+@st.cache_data(show_spinner=False)
+def get_backtest_trading_dates(name: str, symbol: str) -> list:
+    """Return sorted list of trading dates for a symbol in a backtest."""
+    path = BACKTEST_DIR / f"{name}.parquet"
+    if not path.exists():
+        return []
+    df = pd.read_parquet(path, columns=["timestamp", "symbol"])
+    df = df[df["symbol"] == symbol]
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return sorted(df["timestamp"].dt.date.unique().tolist())
+
+
 @st.cache_data(show_spinner="Loading backtest data...")
-def load_backtest(name: str) -> pd.DataFrame:
-    """Load a backtest parquet file by stem name."""
+def load_backtest(name: str, symbol: str | None = None, date_str: str | None = None) -> pd.DataFrame:
+    """Load a backtest parquet file with optional symbol/date filtering."""
     path = BACKTEST_DIR / f"{name}.parquet"
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+    if symbol is not None:
+        df = df[df["symbol"] == symbol]
+    if date_str is not None:
+        import datetime as _dt
+        target = _dt.date.fromisoformat(date_str)
+        df = df[df["timestamp"].dt.date == target]
     return df
 
 
