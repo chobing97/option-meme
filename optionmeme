@@ -31,5 +31,11 @@ if [ "${STAGE}" = "dashboard" ]; then
     exec streamlit run "${SCRIPT_DIR}/src/dashboard/app.py" --server.headless true "${@:2}"
 fi
 
+if [ "$@" == "--help" ] || [ "$@" == "-h" ]; then
+    echo "Usage: $0 <stage> [options]"
+    echo "Available stages: fetch, process, analyze, dashboard"
+    python "${SCRIPT_DIR}/src/run_pipeline.py" --help
+    exit 0
+fi
 echo "Logging to: ${LOG_FILE}"
 python "${SCRIPT_DIR}/src/run_pipeline.py" "$@" 2>&1 | tee "${LOG_FILE}"

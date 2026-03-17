@@ -14,7 +14,8 @@
 | **Phase 3** | `model` | LightGBM / Bidirectional LSTM+Attention 학습·평가 |
 | **Phase 3.5** | `ensemble` | LSTM 캘리브레이션 + GBM/LSTM 가중 앙상블 (US) |
 | **Phase 4** | `batch_predict` | 전 종목 배치 예측 & parquet 저장 |
-| **Phase 5** | `trading` | 풋옵션 시그널 생성 & 매매 엔진 (Mock/실전) |
+| **Phase 5** | `trading` | 풋옵션 시그널 생성 & 매매 엔진 (Mock/Historical/실전) |
+| **Phase 6** | `dashboard` | Streamlit 대시보드 (Raw Data, Labels, Features, Model, Predictions, Backtest) |
 
 ## 기술 스택
 
@@ -23,7 +24,7 @@
 - **데이터 처리**: pandas, pyarrow (Parquet), scipy, ta
 - **ML/DL**: scikit-learn, LightGBM, XGBoost, PyTorch (MPS/CUDA), Optuna
 - **실험 추적**: MLflow (파라미터/메트릭/아티팩트 중앙 관리)
-- **트레이딩**: Black-Scholes 풋옵션 프라이싱, 한국투자증권 OpenAPI
+- **트레이딩**: 실제 옵션 OHLCV 백테스팅, Black-Scholes 풋옵션 프라이싱, 한국투자증권 OpenAPI
 - **유틸**: exchange-calendars, loguru, matplotlib, plotly, Streamlit (대시보드)
 
 ## 설치
@@ -89,22 +90,38 @@ export DATABENTO_API_KEY="your-api-key"
 # Phase 4: 배치 예측
 ./optionmeme batch_predict --label-config all --model-config all
 
-# Phase 5: 트레이딩 (모의)
-./optionmeme trade --market us
+# Phase 5: 트레이딩 (백테스트)
+./optionmeme trade --market us --broker historical  # 실제 옵션 OHLCV 백테스트
+./optionmeme trade --market us --broker mock         # B-S 이론가 백테스트
 ```
 
-### 미국 주식 Databento 수집 (고품질 데이터)
+### Databento 주식 수집 (고품질 데이터)
 
 ```bash
 # 1. DBN 원본 다운로드 (20종목 × 3거래소)
-.venv/bin/python scripts/download_stock_ohlcv.py --dry-run  # 비용 확인
-.venv/bin/python scripts/download_stock_ohlcv.py            # 실제 다운로드
+python -m src.collector.databento.download_us_stock_ohlcv               # 비용 확인만
+python -m src.collector.databento.download_us_stock_ohlcv --download    # 실제 다운로드
+python -m src.collector.databento.download_us_stock_ohlcv --dry-run     # 작업 목록만
+python -m src.collector.databento.download_us_stock_ohlcv --symbol TSLA # 특정 종목
 
-# 2. 통합 ETL (Databento → Parquet 변환 + 나머지 종목 yfinance/TV 수집)
-.venv/bin/python scripts/build_us_ohlcv.py --yes            # 비대화형 실행
-.venv/bin/python scripts/build_us_ohlcv.py --databento-only # Databento만
-.venv/bin/python scripts/build_us_ohlcv.py --legacy-only    # yfinance+TV만
-.venv/bin/python scripts/build_us_ohlcv.py --dry-run        # 미리보기
+# 2. 통합 ETL (Databento DBN → Parquet 변환 + 나머지 종목 yfinance/TV 수집)
+python -m src.collector.databento.build_us_stock_ohlcv --databento-only # Databento만
+python -m src.collector.databento.build_us_stock_ohlcv --legacy-only    # yfinance+TV만
+python -m src.collector.databento.build_us_stock_ohlcv --dry-run        # 미리보기
+```
+
+### Databento 옵션 수집 (OPRA 풋옵션)
+
+```bash
+# 1. OPRA 옵션 DBN 다운로드 (주 단위, ATM ±$5, 만기 ≤14일)
+python -m src.collector.databento.download_us_options_ohlcv --symbol TSLA              # 비용 확인
+python -m src.collector.databento.download_us_options_ohlcv --symbol TSLA --download   # 실제 다운로드
+python -m src.collector.databento.download_us_options_ohlcv --symbol TSLA --dry-run    # 필터링 결과만
+python -m src.collector.databento.download_us_options_ohlcv --symbol TSLA --pick-all   # ATM 전체 계약
+
+# 2. 옵션 DBN → Parquet 변환 (contracts.parquet + 연도별 OHLCV)
+python -m src.collector.databento.build_us_options_ohlcv --symbol TSLA
+python -m src.collector.databento.build_us_options_ohlcv --symbol TSLA --dry-run
 ```
 
 ### 대시보드
@@ -112,6 +129,15 @@ export DATABENTO_API_KEY="your-api-key"
 ```bash
 ./dashboard.sh   # Streamlit 대시보드 실행 (http://localhost:8501)
 ```
+
+| 페이지 | 설명 |
+|---|---|
+| **Raw Data** | 주식/옵션 1분봉 캔들스틱 차트, 정규장 전체 시간축 |
+| **Labeling** | 피크/트로프 라벨 시각화, 클릭으로 라벨 편집 |
+| **Features** | 피처 분포, 상관관계 히트맵 |
+| **Model Performance** | GBM/LSTM/Ensemble PR-AUC 비교 |
+| **Predictions** | 예측 결과 캔들차트 + 확률 막대 그래프 |
+| **Backtest** | 4-panel 차트: 주가 캔들 + 옵션 캔들 + 확률 + 에쿼티/드로다운 |
 
 ### 테스트
 
@@ -142,7 +168,12 @@ option-meme/
 │   │   ├── tv_client.py      # TradingView API 래퍼 (재시도, 지수 백오프)
 │   │   ├── storage.py        # Parquet 저장 & 병합 (연도별 분할, source 추적)
 │   │   ├── collection_tracker.py  # SQLite 수집 진행 추적
-│   │   └── stock_info_db.py  # 종목 기본정보 SQLite DB (섹터, 시총 등)
+│   │   ├── stock_info_db.py  # 종목 기본정보 SQLite DB (섹터, 시총 등)
+│   │   └── databento/        # Databento 고품질 데이터 수집
+│   │       ├── download_us_stock_ohlcv.py    # 주식 DBN 일괄 다운로드
+│   │       ├── build_us_stock_ohlcv.py       # 주식 DBN → Parquet ETL
+│   │       ├── download_us_options_ohlcv.py  # OPRA 옵션 DBN 다운로드
+│   │       └── build_us_options_ohlcv.py     # 옵션 DBN → Parquet ETL
 │   │
 │   ├── labeler/              # Phase 1: 라벨링
 │   │   ├── label_generator.py      # 라벨링 파이프라인
@@ -170,9 +201,10 @@ option-meme/
 │       ├── signal_detector.py # 바 누적 + 피처 → 모델 추론 → 시그널
 │       ├── option_pricer.py  # Black-Scholes 풋옵션 가격 계산
 │       ├── trade_db.py       # 거래 이력 SQLite DB
-│       ├── broker/           # 주문 실행 (mock_broker / 실전 연동)
+│       ├── broker/           # 주문 실행 (Historical/Mock/실전 연동)
 │       │   ├── base.py       # Broker ABC, Order, Signal 타입
-│       │   └── mock_broker.py # 백테스팅용 모의 브로커
+│       │   ├── historical_broker.py # 실제 옵션 OHLCV 백테스팅 브로커
+│       │   └── mock_broker.py # B-S 이론가 백테스팅용 모의 브로커
 │       ├── datafeed/         # 실시간 데이터 피드
 │       │   ├── base.py       # DataFeed ABC
 │       │   └── mock_feed.py  # 히스토리 데이터 기반 모의 피드
@@ -181,23 +213,23 @@ option-meme/
 │           └── console.py    # 콘솔 출력 노티파이어
 │
 ├── scripts/                  # 유틸리티 & 테스트 스크립트
-│   ├── build_us_ohlcv.py     # US 통합 ETL (Databento + yfinance + TV)
-│   ├── download_stock_ohlcv.py # Databento DBN 일괄 다운로드
 │   ├── collect_opra_puts.py  # OPRA 풋옵션 심볼 탐색 & 비용 산정
 │   ├── kis_auth.py           # 한국투자증권 OAuth2 인증 모듈
 │   ├── kis_to_occ.py         # 한투 ↔ OCC 종목코드 변환
+│   ├── test_databento_*.py   # Databento API 테스트 스크립트
 │   └── test_kis_*.py         # 한투 OpenAPI 테스트 스크립트 (~15종)
 │
-├── dashboard/                # Streamlit 대시보드
+├── dashboard/                # Streamlit 대시보드 (src/dashboard/)
 │   ├── app.py                # 앱 진입점
-│   ├── data_loader.py        # 데이터 로더
-│   ├── components/           # 공용 컴포넌트 (charts, filters, metrics)
-│   └── pages/                # 5개 페이지
-│       ├── 1_Raw_Data.py     # 원시 1분봉 데이터 탐색
-│       ├── 2_Labeling.py     # 피크/트로프 라벨링 시각화
+│   ├── data_loader.py        # 캐시 기반 데이터 로더
+│   ├── components/           # 공용 컴포넌트 (charts, filters)
+│   └── pages/                # 6개 페이지
+│       ├── 1_Raw_Data.py     # 주식/옵션 1분봉 캔들스틱 탐색
+│       ├── 2_Labeling.py     # 피크/트로프 라벨링 시각화 & 편집
 │       ├── 3_Features.py     # 피처 분포 & 상관관계
 │       ├── 4_Model_Performance.py  # 모델 성능 비교
-│       └── 5_Predictions.py  # 예측 결과 시각화
+│       ├── 5_Predictions.py  # 예측 결과 시각화
+│       └── 6_Backtest.py     # 백테스트 결과 (주가/옵션 캔들, 매매, 에쿼티)
 │
 ├── tests/                    # pytest 테스트 스위트
 │   ├── collector/            # 수집 모듈 테스트
@@ -209,33 +241,40 @@ option-meme/
 │
 └── data/
     ├── raw/
-    │   ├── {kr,us}/                              # 1분봉 OHLCV Parquet (연도별 분할)
-    │   ├── databento/us/{SYMBOL}/                # Databento DBN 원본 (.dbn.zst)
-    │   └── stock_info.db                         # 종목 기본정보 SQLite
+    │   ├── stock/
+    │   │   ├── {kr,us}/{SYMBOL}/{year}.parquet   # 주식 1분봉 OHLCV (연도별 분할)
+    │   │   └── databento/us/{SYMBOL}/*.dbn.zst   # Databento 주식 DBN 원본
+    │   ├── options/
+    │   │   ├── us/{SYMBOL}/contracts.parquet      # 옵션 계약 메타데이터
+    │   │   ├── us/{SYMBOL}/{year}.parquet         # 옵션 1분봉 OHLCV
+    │   │   └── databento/us/{SYMBOL}/*.dbn.zst    # Databento 옵션 DBN 원본
+    │   └── stock_info.db                          # 종목 기본정보 SQLite
     ├── processed/
-    │   ├── labeled/{L1,L2}/                      # 변형별 라벨링 데이터
-    │   └── featured/{L1,L2}/{M1,M2,M3,M4}/      # 변형별 피처 데이터
-    ├── models/{L1,L2}/{M1,M2,M3,M4}/            # 변형별 모델 파일
-    ├── predictions/labeled/{L1,L2}/{M1,M2,M3,M4}/ # 변형별 예측 결과
-    ├── mlruns/                                   # MLflow 실험 추적 데이터
+    │   ├── labeled/{L1,L2}/                       # 변형별 라벨링 데이터
+    │   └── featured/{L1,L2}/{M1,M2,M3,M4}/       # 변형별 피처 데이터
+    ├── models/{L1,L2}/{M1,M2,M3,M4}/             # 변형별 모델 파일
+    ├── predictions/labeled/{model_type}/{L}/{M}/  # 모델별 예측 결과
+    ├── trading/backtests/                         # 백테스트 결과 Parquet
+    ├── mlruns/                                    # MLflow 실험 추적 데이터
     └── metadata/
-        ├── collection.db                         # 수집 진행 추적 SQLite
-        └── logs/                                 # 파이프라인 실행 로그
+        ├── collection.db                          # 수집 진행 추적 SQLite
+        └── logs/                                  # 파이프라인 실행 로그
 ```
 
 ## 데이터 흐름
 
 ```
-┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐
-│ Phase 0  │    │ Phase 1  │    │ Phase 2  │    │ Phase 3  │    │  Phase 4     │    │ Phase 5  │
-│Collector │───▶│ Labeler  │───▶│ Features │───▶│  Model   │───▶│batch_predict │───▶│ Trading  │
-└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────────┘    └──────────┘
-      │              │               │               │                │                  │
- Databento +     L1/L2 변형      M1~M4 변형       GBM+LSTM         전 종목           풋옵션
- yfinance +     prominence/     lookback/fill    peak/trough       배치 예측        시그널+매매
- tvDatafeed      width              │               │                │                  │
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐    ┌──────────┐
+│ Phase 0  │    │ Phase 1  │    │ Phase 2  │    │ Phase 3  │    │  Phase 4     │    │ Phase 5  │    │ Phase 6  │
+│Collector │───▶│ Labeler  │───▶│ Features │───▶│  Model   │───▶│batch_predict │───▶│ Trading  │───▶│Dashboard │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────────┘    └──────────┘    └──────────┘
+      │              │               │               │                │                  │               │
+ Databento +     L1/L2 변형      M1~M4 변형       GBM+LSTM         전 종목           풋옵션         시각화 &
+ yfinance +     prominence/     lookback/fill    peak/trough       배치 예측        시그널+매매     백테스트
+ tvDatafeed      width              │               │                │                  │            분석
       ▼              ▼               ▼               ▼                ▼                  ▼
- raw/*.parquet  labeled/L*/   featured/L*/M*/  models/L*/M*/  predictions/L*/M*/    trade_db
+ stock/*.parquet labeled/L*/   featured/L*/M*/  models/L*/M*/  predictions/{type}/  backtests/
+ options/*.parquet
 ```
 
 ### 데이터 수집 전략 (3-tier)
@@ -257,6 +296,18 @@ ETF  (7) : SPY, QQQ, IWM, TQQQ, SQQQ, TLT, SLV
 - 동일 분봉의 3거래소 데이터를 OHLCV 합산 (open=가중평균, high=max, low=min, close=가중평균, volume=sum)
 - 결과: 2020-01-01 ~ 현재까지 약 6년치 1분봉
 
+#### Databento 옵션 데이터 (OPRA)
+
+ATM 풋옵션 1분봉 OHLCV를 Databento OPRA 피드에서 수집. 주 단위로 다운로드하며, 캐시 시스템으로 옵션 정의 조회 비용을 절감.
+
+```
+옵션 커버리지 (11종목): TSLA, AAPL, NVDA, AMZN, AMD, META, MSFT, GOOGL, IWM, QQQ, SPY
+```
+
+- 필터: ATM ±$5 이내, 만기 ≤14일, 풋옵션만
+- 출력: `contracts.parquet` (계약 메타) + `{year}.parquet` (1분봉 OHLCV)
+- 3개 거래소 합산: open=first, high=max, low=min, close=last, volume=sum
+
 #### 수집 우선순위
 
 1. Databento 데이터가 있으면 해당 종목은 Databento만 사용
@@ -267,16 +318,24 @@ ETF  (7) : SPY, QQQ, IWM, TQQQ, SQQQ, TLT, SLV
 ### Parquet 저장 구조
 
 ```
-data/raw/us/TSLA/
+# 주식 OHLCV
+data/raw/stock/us/TSLA/
 ├── 2020.parquet    # 2020년 1분봉
 ├── 2021.parquet
 ├── ...
 └── 2026.parquet
+
+# 옵션 OHLCV
+data/raw/options/us/TSLA/
+├── contracts.parquet   # 계약 메타: symbol, underlying, expiry, cp, strike
+├── 2025.parquet        # 옵션 1분봉: datetime, symbol, open, high, low, close, volume
+└── 2026.parquet
 ```
 
 - 연도별 분할 저장, 증분 병합 (`keep="last"`로 중복 제거)
-- 스키마: `datetime, open, high, low, close, volume, source`
-- `source` 컬럼으로 데이터 출처 식별
+- 주식 스키마: `datetime, open, high, low, close, volume, source`
+- 옵션 스키마: `datetime, symbol(OCC), open, high, low, close, volume`
+- `source` 컬럼으로 데이터 출처 식별 (`databento`, `yfinance`, `tvdatafeed`)
 
 ### SQLite 메타데이터
 
@@ -590,9 +649,24 @@ Lookback 적용 시 각 base feature에 대해 lag1~lagN 파생 (M1/M2: 450 lag,
 | 손절매 | PnL ≤ -5% | 풋 전량 매도 |
 | 강제청산 | 장마감 120분 전 | 풋 전량 매도 |
 
-### Black-Scholes 프라이싱
+### 브로커
 
-모의 브로커에서 풋옵션 가격 계산:
+| 브로커 | 설명 | 가격 소스 |
+|---|---|---|
+| **HistoricalBroker** | 실제 옵션 OHLCV 기반 백테스트 | `data/raw/options/us/` Parquet |
+| **MockBroker** | B-S 이론가 기반 백테스트 | Black-Scholes 공식 |
+
+#### HistoricalBroker
+
+실제 Databento OPRA 옵션 1분봉 데이터를 사용하여 백테스트:
+- `contracts.parquet`에서 ATM 풋옵션 계약 매칭
+- 타임스탬프 기반 asof join으로 체결가 결정
+- 거래량 0인 분봉은 주문 거부
+- 실시간 mark-to-market (실제 옵션 가격 반영)
+
+#### MockBroker (Black-Scholes)
+
+이론가 기반 풋옵션 가격 계산:
 - 변동성: 25% (연환산)
 - 무위험이자율: 3.5%
 - 슬리피지: 0.5%
@@ -644,8 +718,6 @@ Labeling과 Model 파라미터의 조합은 `config/variants.py`의 `LABEL_CONFI
 | `test_databento_opra.py` | Databento OPRA 옵션 데이터 조회 & 비용 확인 |
 | `test_databento_stock.py` | Databento 주식 데이터 비용 확인 |
 | `collect_opra_puts.py` | OPRA 풋옵션 심볼 탐색 & 비용 산정 |
-| `download_stock_ohlcv.py` | Databento DBN 일괄 다운로드 (20종목 × 3거래소) |
-| `build_us_ohlcv.py` | US 통합 ETL (Databento + yfinance + tvDatafeed) |
 
 ## 라이선스
 

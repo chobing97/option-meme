@@ -80,6 +80,29 @@ def _symbol_list_keys(market: str) -> list[str]:
 # ── Collector ────────────────────────────────────────────
 
 
+def _ensure_databento_data() -> None:
+    """Databento 원본 데이터가 없으면 rclone 으로 Google Drive 에서 복원 시도."""
+    import subprocess
+
+    stock_dbn = DATA_DIR / "raw" / "stock" / "databento" / "us"
+    options_dbn = DATA_DIR / "raw" / "options" / "databento" / "us"
+
+    has_stock = stock_dbn.exists() and any(stock_dbn.iterdir())
+    has_options = options_dbn.exists() and any(options_dbn.iterdir())
+
+    if has_stock and has_options:
+        return
+
+    restore_script = Path(__file__).parent / "collector" / "databento" / "restore_databento.sh"
+    if not restore_script.exists():
+        return
+
+    logger.info("Databento 원본 데이터 없음 — Google Drive 에서 복원 시도")
+    result = subprocess.run(["bash", str(restore_script)], capture_output=False)
+    if result.returncode != 0:
+        logger.warning("Databento 복원 실패 (rclone 미설치 또는 remote 미설정). 계속 진행합니다.")
+
+
 def run_collector(markets: list[str], full: bool = False, symbols: list[str] | None = None) -> None:
     """Run data collection for specified markets.
 
@@ -90,6 +113,7 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
     from src.collector.bar_fetcher import BarFetcher, fetch_yfinance, load_symbol_list
     from src.collector.storage import get_symbol_date_range
 
+    _ensure_databento_data()
     fetcher = BarFetcher()
 
     for market in markets:
