@@ -27,6 +27,9 @@ env/
 *.swp
 *.swo
 
+# Caches
+.cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
