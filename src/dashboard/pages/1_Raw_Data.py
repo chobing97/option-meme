@@ -14,7 +14,7 @@ import streamlit as st
 from dashboard.components.charts import make_candlestick, make_option_candlestick
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    market_selector, reload_button, symbol_selector,
+    market_selector, reload_button, symbol_selector, timeframe_selector,
 )
 from dashboard.data_loader import (
     get_raw_date_range, get_raw_symbols, get_raw_trading_dates, get_stock_name_map,
@@ -29,11 +29,12 @@ kb_dir = kb_nav_read()
 # ── Sidebar filters ───────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 market = market_selector(key="raw_market")
-symbols = get_raw_symbols(market)
+symbols = get_raw_symbols(market, timeframe)
 
 if not symbols:
-    st.warning(f"No raw data for **{market.upper()}**. Run: `python run_pipeline.py collector --market {market}`")
+    st.warning(f"No raw data for **{market.upper()}** [{timeframe}]. Run: `python run_pipeline.py collector --market {market}`")
     st.stop()
 
 name_map = get_stock_name_map(market)
@@ -43,7 +44,7 @@ if symbol is None:
     st.stop()
 
 # Get date range without loading all data
-date_range = get_raw_date_range(market, symbol)
+date_range = get_raw_date_range(market, symbol, timeframe)
 if date_range is None:
     st.warning(f"No bars for {symbol}")
     st.stop()
@@ -52,7 +53,7 @@ min_dt, max_dt = date_range[0].date(), date_range[1].date()
 start, end = date_range_selector(min_dt, max_dt, key="raw_dates")
 
 # Get trading dates (lightweight — datetime column only)
-all_dates = get_raw_trading_dates(market, symbol)
+all_dates = get_raw_trading_dates(market, symbol, timeframe)
 dates = [d for d in all_dates if start <= d <= end]
 if not dates:
     st.info("No data in selected range.")
@@ -78,16 +79,16 @@ selected_date = st.select_slider(
 )
 
 day_name = DAY_NAMES[selected_date.weekday()]
-st.subheader(f"Intraday Chart — {stock_label} — {selected_date} ({day_name})")
+st.subheader(f"Intraday Chart [{timeframe}] — {stock_label} — {selected_date} ({day_name})")
 
 # Load only 1 day of data (end_date + 1 day because storage filters with <=)
 next_day = selected_date + timedelta(days=1)
-day_df = load_raw_bars(market, symbol, str(selected_date), str(next_day))
+day_df = load_raw_bars(market, symbol, str(selected_date), str(next_day), timeframe)
 
 if day_df.empty:
     st.info(f"No data for {selected_date}")
 else:
-    chart_title = f"{stock_label} ({market.upper()}) — {selected_date} ({day_name})"
+    chart_title = f"{stock_label} ({market.upper()}) [{timeframe}] — {selected_date} ({day_name})"
 
     # Stock chart
     st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)

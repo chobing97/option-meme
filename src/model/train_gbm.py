@@ -169,6 +169,158 @@ def optimize_lgb(
     return best_model, best_metrics, study.best_params
 
 
+def train_lgb_incremental(
+    chunks: list,
+    target_label: int,
+    feature_cols: list[str],
+    split_dates: dict,
+    params: Optional[dict] = None,
+    num_boost_round: int = 1000,
+    early_stopping_rounds: int = 50,
+) -> tuple[lgb.Booster, dict]:
+    """Train LightGBM incrementally across memory-safe chunks.
+
+    Each chunk is loaded, split by date into train/val, and used to continue
+    training via ``init_model``.  The validation set from each chunk is used
+    for early stopping in that round.  Final evaluation is done by loading
+    and predicting on each chunk's test portion.
+
+    Args:
+        chunks: List of chunks from ``build_incremental_chunks``.
+                Each chunk is a list of partition info dicts with 'path' key.
+        target_label: 1 for peak, 2 for trough.
+        feature_cols: Feature column names.
+        split_dates: Dict with 'val_start' and 'test_start' date strings
+                     for time-based splitting.
+        params: LightGBM params.
+        num_boost_round: Total boosting rounds (distributed across chunks).
+        early_stopping_rounds: Patience per chunk.
+
+    Returns:
+        Tuple of (trained Booster, evaluation metrics dict).
+    """
+    import pandas as pd
+    from src.features.feature_pipeline import load_chunk
+
+    if params is None:
+        params = LGB_PARAMS.copy()
+
+    val_start = pd.Timestamp(split_dates["val_start"])
+    test_start = pd.Timestamp(split_dates["test_start"])
+    rounds_per_chunk = max(10, num_boost_round // len(chunks))
+
+    model = None
+    total_train = 0
+    total_val = 0
+
+    logger.info(
+        f"Incremental training: {len(chunks)} chunks, "
+        f"{rounds_per_chunk} rounds/chunk, label={target_label}"
+    )
+
+    for i, chunk in enumerate(chunks):
+        df = load_chunk(chunk)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+
+        train_df = df[df["datetime"] < val_start]
+        val_df = df[(df["datetime"] >= val_start) & (df["datetime"] < test_start)]
+
+        if train_df.empty:
+            logger.warning(f"  Chunk {i}: no train data, skipping")
+            del df, train_df, val_df
+            continue
+
+        X_train, y_train = prepare_xy(train_df, target_label, feature_cols)
+        total_train += len(y_train)
+
+        train_ds = lgb.Dataset(X_train, label=y_train, free_raw_data=True)
+
+        valid_sets = [train_ds]
+        valid_names = ["train"]
+
+        if not val_df.empty:
+            X_val, y_val = prepare_xy(val_df, target_label, feature_cols)
+            total_val += len(y_val)
+            val_ds = lgb.Dataset(X_val, label=y_val, reference=train_ds, free_raw_data=True)
+            valid_sets.append(val_ds)
+            valid_names.append("val")
+
+        callbacks = [
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds),
+            lgb.log_evaluation(period=100),
+        ]
+
+        model = lgb.train(
+            params,
+            train_ds,
+            num_boost_round=rounds_per_chunk,
+            valid_sets=valid_sets,
+            valid_names=valid_names,
+            callbacks=callbacks,
+            init_model=model,
+        )
+
+        chunk_rows = len(train_df) + len(val_df)
+        logger.info(
+            f"  Chunk {i+1}/{len(chunks)}: train={len(y_train)}, "
+            f"val={len(val_df)}, trees={model.num_trees()}"
+        )
+
+        del df, train_df, val_df, X_train, y_train, train_ds
+        if "X_val" in dir():
+            del X_val, y_val, val_ds
+
+    if model is None:
+        raise ValueError("No training data found in any chunk")
+
+    # Final evaluation: iterate chunks and collect test predictions
+    all_y_test = []
+    all_y_pred = []
+    for chunk in chunks:
+        df = load_chunk(chunk)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        test_df = df[df["datetime"] >= test_start]
+        if test_df.empty:
+            del df, test_df
+            continue
+
+        X_test, y_test = prepare_xy(test_df, target_label, feature_cols)
+        y_pred = model.predict(X_test)
+        all_y_test.append(y_test)
+        all_y_pred.append(y_pred)
+        del df, test_df, X_test
+
+    if all_y_test:
+        y_test_all = np.concatenate(all_y_test)
+        y_pred_all = np.concatenate(all_y_pred)
+        pr_auc = average_precision_score(y_test_all, y_pred_all)
+    else:
+        pr_auc = 0.0
+        y_test_all = np.array([])
+
+    # Feature importance
+    importance = dict(
+        zip(feature_cols, model.feature_importance(importance_type="gain"))
+    )
+    top_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:20]
+
+    metrics = {
+        "target_label": target_label,
+        "pr_auc_test": pr_auc,
+        "best_iteration": model.num_trees(),
+        "train_size": total_train,
+        "val_size": total_val,
+        "test_size": len(y_test_all),
+        "positive_rate_test": float(y_test_all.mean()) if len(y_test_all) > 0 else 0.0,
+        "n_chunks": len(chunks),
+        "top_features": top_features,
+    }
+
+    logger.info(f"Incremental LightGBM test PR-AUC: {pr_auc:.4f} ({len(chunks)} chunks)")
+
+    return model, metrics
+
+
 def save_model(model: lgb.Booster, path: Path) -> None:
     """Save LightGBM model to file."""
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -17,7 +17,8 @@ Options:
     --threshold 0.5                               # Prediction threshold (predict/trade)
     --date 2026-02-20                             # Target date (predict/trade)
     --optimize                                    # Optuna HP search for GBM (model only)
-    --label-config L1|L2|all                      # Label variant (default: all)
+    --timeframe 1m|5m                             # Timeframe (default: 1m)
+    --label-config L1|L2|L3|all                   # Label variant (default: all)
     --model-config M1|M2|M3|M4|all                # Model variant (default: all)
 """
 
@@ -31,8 +32,8 @@ import mlflow
 import pandas as pd
 from loguru import logger
 
-from config.settings import DATA_DIR, LABELED_DIR, PREDICTIONS_DIR, PROCESSED_DIR
-from config.variants import LABEL_CONFIGS, MODEL_CONFIGS
+from config.settings import DATA_DIR, LABELED_DIR, PREDICTIONS_DIR, PROCESSED_DIR, SUPPORTED_TIMEFRAMES
+from config.variants import LABEL_CONFIGS, MODEL_CONFIGS, get_label_configs, get_model_configs
 
 # MLflow tracking URI (local file store)
 MLFLOW_TRACKING_URI = str(DATA_DIR / "mlruns")
@@ -42,17 +43,29 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 # ── Variant helpers ──────────────────────────────────────
 
 
-def _resolve_label_configs(label_config_arg: str) -> list[str]:
+def _resolve_label_configs(label_config_arg: str, timeframe: str = "1m") -> list[str]:
     """Resolve --label-config argument to list of label config keys."""
+    configs = get_label_configs(timeframe)
     if label_config_arg == "all":
-        return list(LABEL_CONFIGS.keys())
+        return list(configs.keys())
+    if label_config_arg not in configs:
+        raise ValueError(
+            f"Label config {label_config_arg!r} not valid for timeframe {timeframe!r}. "
+            f"Valid: {list(configs.keys())}"
+        )
     return [label_config_arg]
 
 
-def _resolve_model_configs(model_config_arg: str) -> list[str]:
+def _resolve_model_configs(model_config_arg: str, timeframe: str = "1m") -> list[str]:
     """Resolve --model-config argument to list of model config keys."""
+    configs = get_model_configs(timeframe)
     if model_config_arg == "all":
-        return list(MODEL_CONFIGS.keys())
+        return list(configs.keys())
+    if model_config_arg not in configs:
+        raise ValueError(
+            f"Model config {model_config_arg!r} not valid for timeframe {timeframe!r}. "
+            f"Valid: {list(configs.keys())}"
+        )
     return [model_config_arg]
 
 
@@ -103,7 +116,7 @@ def _ensure_databento_data() -> None:
         logger.warning("Databento 복원 실패 (rclone 미설치 또는 remote 미설정). 계속 진행합니다.")
 
 
-def run_collector(markets: list[str], full: bool = False, symbols: list[str] | None = None) -> None:
+def run_collector(markets: list[str], full: bool = False, symbols: list[str] | None = None, timeframe: str = "1m") -> None:
     """Run data collection for specified markets.
 
     Default (incremental): fetch from last collected date to today.
@@ -194,45 +207,70 @@ def run_collector(markets: list[str], full: bool = False, symbols: list[str] | N
     summary = fetcher.tracker.summary()
     logger.info(f"Collection summary: {summary}")
 
+    # Resample 1m → 5m when timeframe is 5m
+    if timeframe == "5m":
+        from src.collector.resampler import resample_all
+
+        for market in markets:
+            logger.info(f"=== Resampling 1m → 5m for {market} ===")
+            resample_all(market)
+
 
 # ── Labeler ──────────────────────────────────────────────
 
 
-def run_labeler(markets: list[str], label_config: str = "L1") -> None:
-    """Run labeling for all symbols in specified markets with given label config."""
+def run_labeler(markets: list[str], label_config: str = "L1", timeframe: str = "1m") -> None:
+    """Run labeling for all symbols in specified markets with given label config.
+
+    Saves labeled data in partitioned layout: symbol/year parquet files.
+    """
+    from config.settings import RAW_STOCK_DIR
     from src.labeler.label_generator import (
         apply_manual_overrides,
-        label_all_symbols,
         label_statistics,
+        label_symbol,
+        save_labeled_partitioned,
     )
 
-    lcfg = LABEL_CONFIGS[label_config]
+    label_configs_dict = get_label_configs(timeframe)
+    lcfg = label_configs_dict[label_config]
 
     for market in markets:
-        logger.info(f"=== Labeling {market} [{label_config}] ===")
-        labeled_df = label_all_symbols(
-            market,
-            prominence_pct=lcfg["prominence_pct"],
-            distance=lcfg["distance"],
-            width=lcfg["width"],
-            save=False,
-        )
+        logger.info(f"=== Labeling {market} [{label_config}] (timeframe={timeframe}) ===")
 
-        if labeled_df.empty:
+        market_dir = RAW_STOCK_DIR / market
+        if not market_dir.exists():
+            logger.error(f"No raw data directory for market {market}")
+            continue
+        symbols = [d.name for d in market_dir.iterdir() if d.is_dir()]
+        if not symbols:
+            logger.warning(f"No symbols found for {market}")
+            continue
+
+        from tqdm import tqdm
+
+        all_stats_dfs: list[pd.DataFrame] = []
+        for symbol in tqdm(symbols, desc=f"Labeling {market}"):
+            labeled = label_symbol(
+                market, symbol,
+                prominence_pct=lcfg["prominence_pct"],
+                distance=lcfg["distance"],
+                width=lcfg["width"],
+                shift=lcfg["shift"],
+            )
+            if labeled is None:
+                continue
+
+            labeled = apply_manual_overrides(labeled, market, label_config=label_config, timeframe=timeframe)
+            save_labeled_partitioned(labeled, market, label_config, timeframe)
+            all_stats_dfs.append(labeled)
+
+        if not all_stats_dfs:
             logger.warning(f"No data to label for {market}")
             continue
 
-        # 수작업 레이블 오버라이드 적용
-        labeled_df = apply_manual_overrides(labeled_df, market)
-
-        # Save to variant subdirectory
-        output_dir = LABELED_DIR / label_config
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{market}_labeled.parquet"
-        labeled_df.to_parquet(output_path, index=False, compression="snappy")
-        logger.info(f"Saved labeled data to {output_path} ({len(labeled_df)} rows)")
-
-        stats = label_statistics(labeled_df)
+        combined_stats = pd.concat(all_stats_dfs, ignore_index=True)
+        stats = label_statistics(combined_stats)
         logger.info(f"Label statistics for {market} [{label_config}]:")
         for k, v in stats.items():
             logger.info(f"  {k}: {v}")
@@ -241,46 +279,70 @@ def run_labeler(markets: list[str], label_config: str = "L1") -> None:
 # ── Features ─────────────────────────────────────────────
 
 
-def run_features(markets: list[str], label_config: str = "L1", model_config: str = "M1") -> None:
-    """Build features from labeled data with given variant configs."""
+def run_features(markets: list[str], label_config: str = "L1", model_config: str = "M1", timeframe: str = "1m") -> None:
+    """Build features from labeled data with given variant configs.
+
+    Processes per symbol/year to keep peak memory low, saving each partition
+    separately to disk.
+    """
+    from config.settings import KR_SESSION_MINUTES, US_SESSION_MINUTES
     from src.features.feature_pipeline import (
         build_features,
         build_lookback_features,
         clean_features,
         get_feature_columns,
+        save_featured_partitioned,
+    )
+    from src.labeler.label_generator import (
+        list_labeled_symbols,
+        list_labeled_years,
+        load_labeled,
     )
 
-    mcfg = MODEL_CONFIGS[model_config]
-
-    featured_dir = PROCESSED_DIR / "featured" / label_config / model_config
-    featured_dir.mkdir(parents=True, exist_ok=True)
+    model_configs_dict = get_model_configs(timeframe)
+    mcfg = model_configs_dict[model_config]
 
     for market in markets:
-        logger.info(f"=== Building features for {market} [{label_config}/{model_config}] ===")
+        logger.info(f"=== Building features for {market} [{label_config}/{model_config}] (timeframe={timeframe}) ===")
 
-        # Load labeled data from variant subdirectory
-        labeled_path = LABELED_DIR / label_config / f"{market}_labeled.parquet"
-        if not labeled_path.exists():
-            logger.warning(f"No labeled data at {labeled_path}, skipping")
+        symbols = list_labeled_symbols(market, label_config, timeframe)
+        if not symbols:
+            logger.warning(f"No labeled symbols for {market} [{label_config}], skipping")
             continue
 
-        df = pd.read_parquet(labeled_path)
-        logger.info(f"Loaded {len(df)} labeled bars")
+        session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
+        total_rows = 0
 
-        df = build_features(df)
-        df = build_lookback_features(
-            df,
-            lookback=mcfg["gbm_lookback"],
-            fill_method=mcfg["fill_method"],
-        )
-        df = clean_features(df)
+        from tqdm import tqdm
 
-        feature_cols = get_feature_columns(df)
-        logger.info(f"Total features: {len(feature_cols)}")
+        for symbol in tqdm(symbols, desc=f"Features {market}"):
+            years = list_labeled_years(market, label_config, timeframe, symbol)
+            for year in years:
+                df = load_labeled(market, label_config, timeframe, symbol=symbol, year=year)
+                if df.empty:
+                    continue
 
-        output_path = featured_dir / f"{market}_featured.parquet"
-        df.to_parquet(output_path, index=False, compression="snappy")
-        logger.info(f"Saved featured data to {output_path} ({len(df)} rows)")
+                df = build_features(df, session_minutes=session_minutes)
+                df = build_lookback_features(
+                    df,
+                    lookback=mcfg["gbm_lookback"],
+                    fill_method=mcfg["fill_method"],
+                )
+                df = clean_features(df)
+
+                save_featured_partitioned(
+                    df, market, label_config, model_config, timeframe, symbol, year,
+                )
+                total_rows += len(df)
+
+        if total_rows > 0:
+            feature_cols = get_feature_columns(df)
+            logger.info(
+                f"Featured {market} [{label_config}/{model_config}]: "
+                f"{total_rows} rows, {len(feature_cols)} base features"
+            )
+        else:
+            logger.warning(f"No featured data produced for {market}")
 
 
 # ── Model ────────────────────────────────────────────────
@@ -292,85 +354,289 @@ def run_model(
     label_config: str = "L1",
     model_config: str = "M1",
     optimize: bool = False,
+    timeframe: str = "1m",
 ) -> None:
     """Train and evaluate models for a specific variant."""
     from src.features.feature_pipeline import get_all_feature_columns, get_base_feature_columns
     from src.model.dataset import SplitResult, prepare_xy, time_based_split
     from src.model.evaluate import full_evaluation
 
-    mcfg = MODEL_CONFIGS[model_config]
-    lcfg = LABEL_CONFIGS[label_config]
+    model_configs_dict = get_model_configs(timeframe)
+    label_configs_dict = get_label_configs(timeframe)
+    mcfg = model_configs_dict[model_config]
+    lcfg = label_configs_dict[label_config]
 
-    models_dir = DATA_DIR / "models" / label_config / model_config
+    models_dir = DATA_DIR / "models" / timeframe / label_config / model_config
     models_dir.mkdir(parents=True, exist_ok=True)
 
     for market in markets:
-        logger.info(f"=== Training models for {market} [{label_config}/{model_config}] ===")
+        logger.info(f"=== Training models for {market} [{label_config}/{model_config}] (timeframe={timeframe}) ===")
 
-        featured_path = PROCESSED_DIR / "featured" / label_config / model_config / f"{market}_featured.parquet"
-        if not featured_path.exists():
-            logger.warning(f"No featured data at {featured_path}, skipping")
-            continue
-
-        df = pd.read_parquet(featured_path)
-        logger.info(f"Loaded {len(df)} featured bars")
-
-        feature_cols = get_all_feature_columns(df)
-        lstm_feature_cols = get_base_feature_columns(df)
-        logger.info(f"Feature columns: {len(feature_cols)} (GBM), {len(lstm_feature_cols)} (LSTM)")
-
-        split = time_based_split(df)
-        logger.info(
-            f"Split: train={len(split.train)}, val={len(split.val)}, test={len(split.test)}"
+        from src.features.feature_pipeline import (
+            build_incremental_chunks,
+            get_featured_partition_info,
+            load_all_featured,
+            load_chunk,
         )
 
-        # Save train/val/test splits for reproducibility
-        splits_dir = models_dir / "splits"
-        splits_dir.mkdir(parents=True, exist_ok=True)
-        for split_name, split_df in [("train", split.train), ("val", split.val), ("test", split.test)]:
-            path = splits_dir / f"{market}_{split_name}.parquet"
-            split_df.to_parquet(path, index=False, compression="snappy")
-        logger.info(f"Saved train/val/test splits to {splits_dir}")
+        # Decide: incremental vs standard loading
+        partition_info = get_featured_partition_info(market, label_config, model_config, timeframe)
+        if not partition_info:
+            logger.warning(f"No featured data for {market} [{label_config}/{model_config}], skipping")
+            continue
 
-        mlflow.set_experiment(f"option-meme/{market}")
-        with mlflow.start_run(run_name=f"{label_config}_{model_config}"):
-            mlflow.log_params({
-                "market": market,
-                "label_config": label_config,
-                "model_config": model_config,
-                "model_type": model_type,
-                # label config values
-                "prominence_pct": lcfg["prominence_pct"],
-                "label_distance": lcfg["distance"],
-                "label_width": lcfg["width"],
-                # model config values
-                "gbm_lookback": mcfg["gbm_lookback"],
-                "lstm_lookback": mcfg["lstm_lookback"],
-                "fill_method": mcfg["fill_method"],
-            })
+        chunks = build_incremental_chunks(market, label_config, model_config, timeframe)
+        use_incremental = len(chunks) > 1
 
-            for target_label, label_name in [(1, "peak"), (2, "trough")]:
-                logger.info(f"--- Target: {label_name} (label={target_label}) ---")
+        if use_incremental:
+            logger.info(f"Using incremental training ({len(chunks)} chunks)")
 
-                # LightGBM
+            # Compute split dates from partition metadata (load minimal data)
+            # Read datetime range from first and last partition
+            import pyarrow.parquet as pq
+            all_paths = [p["path"] for p in partition_info]
+            first_df = pd.read_parquet(all_paths[0], columns=["datetime"])
+            last_df = pd.read_parquet(all_paths[-1], columns=["datetime"])
+            min_date = pd.to_datetime(first_df["datetime"]).min()
+            max_date = pd.to_datetime(last_df["datetime"]).max()
+            del first_df, last_df
+
+            from config.settings import TEST_MONTHS, VAL_MONTHS
+            test_start = max_date - pd.DateOffset(months=TEST_MONTHS)
+            val_start = test_start - pd.DateOffset(months=VAL_MONTHS)
+
+            # Fallback: 데이터가 부족하면 비율 기반 (날짜 기준)
+            total_days = (max_date - min_date).days
+            if total_days < 60:
+                total_days_span = total_days
+                val_start = min_date + pd.Timedelta(days=int(total_days_span * 0.6))
+                test_start = min_date + pd.Timedelta(days=int(total_days_span * 0.8))
+                logger.warning(
+                    f"Insufficient data ({total_days} days). "
+                    f"Falling back to ratio-based split dates."
+                )
+
+            split_dates = {
+                "val_start": str(val_start),
+                "test_start": str(test_start),
+            }
+            logger.info(f"Split dates: val_start={val_start.date()}, test_start={test_start.date()}")
+
+            # Get feature columns from first partition (small read)
+            sample_df = pd.read_parquet(all_paths[0])
+            feature_cols = get_all_feature_columns(sample_df)
+            lstm_feature_cols = get_base_feature_columns(sample_df)
+            del sample_df
+            logger.info(f"Feature columns: {len(feature_cols)} (GBM), {len(lstm_feature_cols)} (LSTM)")
+
+            mlflow.set_experiment(f"option-meme/{market}")
+            with mlflow.start_run(run_name=f"{label_config}_{model_config}"):
+                mlflow.log_params({
+                    "market": market,
+                    "label_config": label_config,
+                    "model_config": model_config,
+                    "model_type": model_type,
+                    "incremental": True,
+                    "n_chunks": len(chunks),
+                    "prominence_pct": lcfg["prominence_pct"],
+                    "label_distance": lcfg["distance"],
+                    "label_width": lcfg["width"],
+                    "gbm_lookback": mcfg["gbm_lookback"],
+                    "lstm_lookback": mcfg["lstm_lookback"],
+                    "fill_method": mcfg["fill_method"],
+                })
+
+                for target_label, label_name in [(1, "peak"), (2, "trough")]:
+                    logger.info(f"--- Target: {label_name} (label={target_label}) ---")
+
+                    if model_type in ("gbm", "all"):
+                        _train_lgb_model_incremental(
+                            chunks, target_label, label_name, feature_cols,
+                            split_dates, market, models_dir, optimize=optimize,
+                        )
+
+                # Full evaluation (incremental: load test data per chunk)
                 if model_type in ("gbm", "all"):
-                    _train_lgb_model(
-                        split, target_label, label_name, feature_cols,
-                        market, models_dir, optimize=optimize,
+                    _run_full_evaluation_incremental(
+                        chunks, feature_cols, market, models_dir,
+                        test_start=str(test_start),
                     )
+        else:
+            # Standard path: data fits in memory
+            df = load_all_featured(market, label_config, model_config, timeframe)
+            if df.empty:
+                logger.warning(f"No featured data for {market} [{label_config}/{model_config}], skipping")
+                continue
+            logger.info(f"Loaded {len(df)} featured bars")
 
-                # LSTM (base features only — let LSTM learn temporal patterns itself)
-                if model_type in ("lstm", "all"):
-                    _train_lstm_model(
-                        split, target_label, label_name, lstm_feature_cols,
-                        market, models_dir,
-                        lstm_lookback=mcfg["lstm_lookback"],
-                        fill_method=mcfg["fill_method"],
-                    )
+            feature_cols = get_all_feature_columns(df)
+            lstm_feature_cols = get_base_feature_columns(df)
+            logger.info(f"Feature columns: {len(feature_cols)} (GBM), {len(lstm_feature_cols)} (LSTM)")
 
-            # Full evaluation with LightGBM predictions (if available)
-            if model_type in ("gbm", "all"):
-                _run_full_evaluation(split, feature_cols, market, models_dir)
+            split = time_based_split(df)
+            logger.info(
+                f"Split: train={len(split.train)}, val={len(split.val)}, test={len(split.test)}"
+            )
+
+            # Save train/val/test splits for reproducibility
+            splits_dir = models_dir / "splits"
+            splits_dir.mkdir(parents=True, exist_ok=True)
+            for split_name, split_df in [("train", split.train), ("val", split.val), ("test", split.test)]:
+                path = splits_dir / f"{market}_{split_name}.parquet"
+                split_df.to_parquet(path, index=False, compression="snappy")
+            logger.info(f"Saved train/val/test splits to {splits_dir}")
+
+            mlflow.set_experiment(f"option-meme/{market}")
+            with mlflow.start_run(run_name=f"{label_config}_{model_config}"):
+                mlflow.log_params({
+                    "market": market,
+                    "label_config": label_config,
+                    "model_config": model_config,
+                    "model_type": model_type,
+                    "incremental": False,
+                    "prominence_pct": lcfg["prominence_pct"],
+                    "label_distance": lcfg["distance"],
+                    "label_width": lcfg["width"],
+                    "gbm_lookback": mcfg["gbm_lookback"],
+                    "lstm_lookback": mcfg["lstm_lookback"],
+                    "fill_method": mcfg["fill_method"],
+                })
+
+                for target_label, label_name in [(1, "peak"), (2, "trough")]:
+                    logger.info(f"--- Target: {label_name} (label={target_label}) ---")
+
+                    # LightGBM
+                    if model_type in ("gbm", "all"):
+                        _train_lgb_model(
+                            split, target_label, label_name, feature_cols,
+                            market, models_dir, optimize=optimize,
+                        )
+
+                    # LSTM
+                    if model_type in ("lstm", "all"):
+                        _train_lstm_model(
+                            split, target_label, label_name, lstm_feature_cols,
+                            market, models_dir,
+                            lstm_lookback=mcfg["lstm_lookback"],
+                            fill_method=mcfg["fill_method"],
+                        )
+
+                # Full evaluation with LightGBM predictions (if available)
+                if model_type in ("gbm", "all"):
+                    _run_full_evaluation(split, feature_cols, market, models_dir)
+
+
+def _train_lgb_model_incremental(
+    chunks, target_label, label_name, feature_cols, split_dates,
+    market, models_dir, optimize: bool = False,
+):
+    """Train and save a LightGBM model using incremental learning."""
+    from src.model.train_gbm import save_model as save_lgb
+    from src.model.train_gbm import train_lgb_incremental
+
+    # Use saved Optuna params if available
+    params_path = models_dir / f"lgb_{market}_{label_name}_params.json"
+    if params_path.exists():
+        from config.settings import LGB_PARAMS
+        saved_params = json.loads(params_path.read_text())
+        lgb_params = {**LGB_PARAMS, **saved_params}
+        logger.info(f"Training LightGBM for {label_name} (incremental, saved Optuna params)...")
+    else:
+        lgb_params = None
+        logger.info(f"Training LightGBM for {label_name} (incremental)...")
+
+    model, metrics = train_lgb_incremental(
+        chunks, target_label, feature_cols, split_dates, params=lgb_params,
+    )
+
+    model_path = models_dir / f"lgb_{market}_{label_name}.txt"
+    save_lgb(model, model_path)
+
+    logger.info(f"LightGBM {label_name} metrics:")
+    for k, v in metrics.items():
+        if k != "top_features":
+            logger.info(f"  {k}: {v}")
+    if "top_features" in metrics:
+        logger.info("  Top 10 features:")
+        for name, imp in metrics["top_features"][:10]:
+            logger.info(f"    {name}: {imp:.1f}")
+
+    with mlflow.start_run(run_name=f"gbm_{label_name}", nested=True):
+        scalar_metrics = {
+            k: v for k, v in metrics.items()
+            if k != "top_features" and isinstance(v, (int, float))
+        }
+        mlflow.log_metrics(scalar_metrics)
+        mlflow.log_artifact(str(model_path))
+        if params_path.exists():
+            mlflow.log_artifact(str(params_path))
+
+
+def _run_full_evaluation_incremental(
+    chunks, feature_cols, market, models_dir, test_start: str,
+):
+    """Run full evaluation using incremental chunks (test set only)."""
+    import numpy as np
+
+    from src.features.feature_pipeline import load_chunk
+    from src.model.evaluate import full_evaluation
+    from src.model.train_gbm import load_model as load_lgb
+
+    peak_model_path = models_dir / f"lgb_{market}_peak.txt"
+    trough_model_path = models_dir / f"lgb_{market}_trough.txt"
+
+    if not peak_model_path.exists() or not trough_model_path.exists():
+        logger.warning("Skipping full evaluation: LightGBM models not found")
+        return
+
+    peak_model = load_lgb(peak_model_path)
+    trough_model = load_lgb(trough_model_path)
+
+    test_start_ts = pd.Timestamp(test_start)
+
+    # Collect test data from all chunks
+    test_parts = []
+    for chunk in chunks:
+        df = load_chunk(chunk)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        test_df = df[df["datetime"] >= test_start_ts]
+        if not test_df.empty:
+            test_parts.append(test_df)
+        del df
+
+    if not test_parts:
+        logger.warning("No test data found for evaluation")
+        return
+
+    test_all = pd.concat(test_parts, ignore_index=True)
+    del test_parts
+
+    from src.model.dataset import prepare_xy
+
+    X_test, _ = prepare_xy(test_all, target_label=1, feature_cols=feature_cols)
+    peak_proba = peak_model.predict(X_test)
+    trough_proba = trough_model.predict(X_test)
+
+    eval_results = full_evaluation(test_all, peak_proba, trough_proba)
+
+    logger.info("=== Full Evaluation Report (Incremental) ===")
+    logger.info(json.dumps(eval_results, indent=2, default=str))
+
+    with mlflow.start_run(run_name="evaluation", nested=True):
+        flat_metrics: dict[str, float] = {}
+        for side in ("peak", "trough"):
+            pr = eval_results.get(side, {}).get("pr_metrics", {})
+            if "pr_auc" in pr:
+                flat_metrics[f"{side}_pr_auc"] = pr["pr_auc"]
+        bt = eval_results.get("backtest", {})
+        for key in ("n_trades", "total_return", "buy_hold_return", "win_rate",
+                    "avg_win", "avg_loss", "profit_factor", "max_drawdown", "sharpe_approx"):
+            if key in bt and isinstance(bt[key], (int, float)):
+                flat_metrics[f"backtest_{key}"] = bt[key]
+        if flat_metrics:
+            mlflow.log_metrics(flat_metrics)
+
+    del test_all
 
 
 def _train_lgb_model(
@@ -561,6 +827,7 @@ def run_ensemble(
     markets: list[str],
     label_config: str = "L2",
     model_config: str = "M3",
+    timeframe: str = "1m",
 ) -> None:
     """Calibrate LSTM and find optimal GBM/LSTM ensemble weights.
 
@@ -596,7 +863,8 @@ def run_ensemble(
     from src.model.train_lstm import load_model as load_lstm
     from src.model.train_lstm import predict as lstm_predict
 
-    mcfg = MODEL_CONFIGS[model_config]
+    model_configs_dict = get_model_configs(timeframe)
+    mcfg = model_configs_dict[model_config]
     lstm_lookback = mcfg["lstm_lookback"]
     fill_method = mcfg["fill_method"]
 
@@ -613,7 +881,7 @@ def run_ensemble(
                 "Proceeding anyway; optimal weight will likely be w_gbm≈1.0."
             )
 
-        models_dir = DATA_DIR / "models" / label_config / model_config
+        models_dir = DATA_DIR / "models" / timeframe / label_config / model_config
         splits_dir = models_dir / "splits"
 
         # ── Load splits ──────────────────────────────────────────────────────
@@ -807,6 +1075,7 @@ def run_batch_predict(
     threshold: float = 0.5,
     label_config: str | None = None,
     model_config: str | None = None,
+    timeframe: str = "1m",
 ) -> None:
     """Run batch prediction for all symbols/dates in featured data."""
     from src.inference.predict import predict_all
@@ -815,7 +1084,7 @@ def run_batch_predict(
 
     for mt in model_types:
         for market in markets:
-            logger.info(f"=== Batch predicting {market} [{label_config}/{model_config}] model={mt} ===")
+            logger.info(f"=== Batch predicting {market} [{label_config}/{model_config}] model={mt} (timeframe={timeframe}) ===")
             try:
                 result = predict_all(
                     market=market,
@@ -823,6 +1092,7 @@ def run_batch_predict(
                     threshold=threshold,
                     label_config=label_config,
                     model_config=model_config,
+                    timeframe=timeframe,
                 )
                 n_peaks = int((result["label"] == 1).sum())
                 n_troughs = int((result["label"] == 2).sum())
@@ -845,13 +1115,14 @@ def run_predict(
     date: str | None = None,
     label_config: str | None = None,
     model_config: str | None = None,
+    timeframe: str = "1m",
 ) -> None:
     """Run inference for specified symbols."""
     from src.inference.predict import predict_symbol
 
     for market in markets:
         for symbol in symbols:
-            logger.info(f"=== Predicting {market}/{symbol} [{label_config}/{model_config}] ===")
+            logger.info(f"=== Predicting {market}/{symbol} [{label_config}/{model_config}] (timeframe={timeframe}) ===")
             try:
                 result = predict_symbol(
                     market=market,
@@ -861,6 +1132,7 @@ def run_predict(
                     date=date,
                     label_config=label_config,
                     model_config=model_config,
+                    timeframe=timeframe,
                 )
                 logger.info(
                     f"Done: {result['date']}, "
@@ -886,6 +1158,7 @@ def run_trade(
     broker_type: str = "mock",
     label_config: str = "L2",
     model_config: str = "M3",
+    timeframe: str = "1m",
 ) -> None:
     """Run trading simulation for one or more symbols.
 
@@ -1032,6 +1305,8 @@ examples:
   ./optionmeme features --label-config L2 --model-config M3
   ./optionmeme model --label-config L2 --model-config M3
   ./optionmeme batch_predict --label-config all --model-config all
+  ./optionmeme all --timeframe 5m                  5-minute pipeline
+  ./optionmeme labeler --timeframe 5m --label-config L1
 """,
     )
 
@@ -1107,14 +1382,23 @@ examples:
         help="Run Optuna hyperparameter optimization for LightGBM (model stage only)",
     )
     parser.add_argument(
+        "--timeframe",
+        choices=SUPPORTED_TIMEFRAMES,
+        default="1m",
+        help="Timeframe for the pipeline: 1m or 5m (default: 1m)",
+    )
+    # Label choices: union of all timeframe configs (L1, L2, L3)
+    _all_label_keys = sorted(set(LABEL_CONFIGS.keys()) | set(get_label_configs("5m").keys()))
+    parser.add_argument(
         "--label-config",
-        choices=list(LABEL_CONFIGS.keys()) + ["all"],
+        choices=_all_label_keys + ["all"],
         default="all",
         help="Label configuration variant (default: all)",
     )
+    _all_model_keys = sorted(set(MODEL_CONFIGS.keys()) | set(get_model_configs("5m").keys()))
     parser.add_argument(
         "--model-config",
-        choices=list(MODEL_CONFIGS.keys()) + ["all"],
+        choices=_all_model_keys + ["all"],
         default="all",
         help="Model configuration variant (default: all)",
     )
@@ -1128,27 +1412,28 @@ def main() -> None:
 
     markets = _resolve_markets(args.market)
     stage = args.stage
-    label_configs = _resolve_label_configs(args.label_config)
-    model_configs = _resolve_model_configs(args.model_config)
+    timeframe = args.timeframe
+    label_configs = _resolve_label_configs(args.label_config, timeframe)
+    model_configs = _resolve_model_configs(args.model_config, timeframe)
 
     logger.info(
-        f"Pipeline start: stage={stage}, markets={markets}, "
+        f"Pipeline start: stage={stage}, markets={markets}, timeframe={timeframe}, "
         f"label_configs={label_configs}, model_configs={model_configs}"
     )
     start_time = datetime.now()
 
     try:
         if stage in ("collector", "all"):
-            run_collector(markets, full=args.full, symbols=args.symbol)
+            run_collector(markets, full=args.full, symbols=args.symbol, timeframe=timeframe)
 
         if stage in ("labeler", "all"):
             for lc in label_configs:
-                run_labeler(markets, label_config=lc)
+                run_labeler(markets, label_config=lc, timeframe=timeframe)
 
         if stage in ("features", "all"):
             for lc in label_configs:
                 for mc in model_configs:
-                    run_features(markets, label_config=lc, model_config=mc)
+                    run_features(markets, label_config=lc, model_config=mc, timeframe=timeframe)
 
         if stage in ("model", "all"):
             for lc in label_configs:
@@ -1159,12 +1444,13 @@ def main() -> None:
                         label_config=lc,
                         model_config=mc,
                         optimize=args.optimize,
+                        timeframe=timeframe,
                     )
 
         if stage == "ensemble":
             for lc in label_configs:
                 for mc in model_configs:
-                    run_ensemble(markets, label_config=lc, model_config=mc)
+                    run_ensemble(markets, label_config=lc, model_config=mc, timeframe=timeframe)
 
         if stage == "batch_predict":
             for lc in label_configs:
@@ -1175,6 +1461,7 @@ def main() -> None:
                         threshold=args.threshold,
                         label_config=lc,
                         model_config=mc,
+                        timeframe=timeframe,
                     )
 
         if stage == "predict":
@@ -1190,6 +1477,7 @@ def main() -> None:
                         date=args.date,
                         label_config=lc,
                         model_config=mc,
+                        timeframe=timeframe,
                     )
 
         if stage == "trade":
@@ -1212,6 +1500,7 @@ def main() -> None:
                 broker_type=args.broker,
                 label_config=label_config,
                 model_config=model_config,
+                timeframe=timeframe,
             )
 
     except KeyboardInterrupt:

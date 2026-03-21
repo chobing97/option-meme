@@ -8,6 +8,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 RAW_STOCK_DIR = RAW_DIR / "stock"
 RAW_OPTIONS_DIR = RAW_DIR / "options"
+RAW_GENERATED_DIR = DATA_DIR / "raw-generated"
 PROCESSED_DIR = DATA_DIR / "processed"
 LABELED_DIR = PROCESSED_DIR / "labeled"
 LABELED_MANUAL_DIR = PROCESSED_DIR / "labeled_manual"
@@ -17,18 +18,20 @@ LOG_DIR = DATA_DIR / "metadata" / "logs"
 CONFIG_DIR = PROJECT_ROOT / "src" / "config"
 SYMBOLS_DIR = CONFIG_DIR / "symbols"
 
-# ── Market Sessions ───────────────────────────────────
-# Early session window (minutes from market open)
-EARLY_SESSION_MINUTES = 60
+# ── Timeframes ────────────────────────────────────────
+SUPPORTED_TIMEFRAMES = ["1m", "5m"]
 
-# Korea: 09:00 ~ 10:00 KST
+# ── Market Sessions ───────────────────────────────────
+# Full session duration (minutes)
+KR_SESSION_MINUTES = 390  # 09:00~15:30
+US_SESSION_MINUTES = 390  # 09:30~16:00
+
+# Korea: 09:00 ~ 15:30 KST
 KR_MARKET_OPEN = "09:00"
-KR_EARLY_END = "10:00"
 KR_TIMEZONE = "Asia/Seoul"
 
-# US: 09:30 ~ 10:30 ET
+# US: 09:30 ~ 16:00 ET
 US_MARKET_OPEN = "09:30"
-US_EARLY_END = "10:30"
 US_TIMEZONE = "America/New_York"
 
 # ── Data Collection ───────────────────────────────────

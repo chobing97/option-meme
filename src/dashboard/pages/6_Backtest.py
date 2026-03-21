@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import streamlit as st
 
 from dashboard.components.charts import make_backtest_chart
-from dashboard.components.filters import kb_nav_apply_date, kb_nav_apply_selectbox, kb_nav_read, reload_button
+from dashboard.components.filters import kb_nav_apply_date, kb_nav_apply_selectbox, kb_nav_read, reload_button, timeframe_selector
 from datetime import timedelta
 
 from dashboard.data_loader import (
@@ -28,6 +28,7 @@ kb_dir = kb_nav_read()
 # ── Sidebar ───────────────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 
 files = get_backtest_files()
 if not files:
@@ -102,13 +103,14 @@ if sell_reasons:
 
 # Stock OHLCV
 next_day = selected_date + timedelta(days=1)
-stock_ohlcv = load_raw_bars("us", symbol, str(selected_date), str(next_day))
+bt_market = day_df["market"].iloc[0] if "market" in day_df.columns and not day_df.empty else "us"
+stock_ohlcv = load_raw_bars(bt_market, symbol, str(selected_date), str(next_day), timeframe)
 
 # Option OHLCV
 option_ohlcv = None
-if not buys.empty and has_options_data("us", symbol):
+if not buys.empty and has_options_data(bt_market, symbol):
     trade_strike = buys["strike"].iloc[0]
-    option_ohlcv = load_options_ohlcv_by_strike("us", symbol, str(selected_date), trade_strike)
+    option_ohlcv = load_options_ohlcv_by_strike(bt_market, symbol, str(selected_date), trade_strike)
 
 # ── Main Chart ───────────────────────────────────────────
 

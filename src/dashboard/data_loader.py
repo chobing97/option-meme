@@ -1,6 +1,7 @@
 """Cached data loading layer for the Streamlit dashboard."""
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -11,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_OPTIONS_DIR, RAW_STOCK_DIR
+from config.settings import DATA_DIR, LABELED_DIR, LABELED_MANUAL_DIR, PREDICTIONS_DIR, PROCESSED_DIR, RAW_GENERATED_DIR, RAW_OPTIONS_DIR, RAW_STOCK_DIR
 
 import logging
 
@@ -38,30 +39,67 @@ FEATURED_DIR = PROCESSED_DIR / "featured"
 MODELS_DIR = DATA_DIR / "models"
 
 
-def _labeled_path(market: str, label_config: str) -> Path:
-    return LABELED_DIR / label_config / f"{market}_labeled.parquet"
+def _labeled_path(market: str, label_config: str, timeframe: str = "1m") -> Path:
+    """Return the labeled directory for partitioned layout, or legacy file path."""
+    return LABELED_DIR / timeframe / label_config / market
 
 
-def _featured_path(market: str, label_config: str, model_config: str) -> Path:
-    return FEATURED_DIR / label_config / model_config / f"{market}_featured.parquet"
+def _labeled_legacy_path(market: str, label_config: str, timeframe: str = "1m") -> Path:
+    """Return legacy single-file labeled path (backward compat)."""
+    return LABELED_DIR / timeframe / label_config / f"{market}_labeled.parquet"
 
 
-def _model_path(market: str, label_config: str, model_config: str, mtype: str, target: str) -> Path:
+def _labeled_dir_exists(market: str, label_config: str, timeframe: str = "1m") -> bool:
+    """Check if partitioned labeled data exists for this market."""
+    d = _labeled_path(market, label_config, timeframe)
+    return d.exists() and d.is_dir() and any(d.rglob("*.parquet"))
+
+
+def _featured_path(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> Path:
+    """Return the featured directory for partitioned layout."""
+    return FEATURED_DIR / timeframe / label_config / model_config / market
+
+
+def _featured_legacy_path(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> Path:
+    """Return legacy single-file featured path (backward compat)."""
+    return FEATURED_DIR / timeframe / label_config / model_config / f"{market}_featured.parquet"
+
+
+def _featured_dir_exists(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> bool:
+    """Check if partitioned featured data exists."""
+    d = _featured_path(market, label_config, model_config, timeframe)
+    return d.exists() and d.is_dir() and any(d.rglob("*.parquet"))
+
+
+def _model_path(market: str, label_config: str, model_config: str, mtype: str, target: str, timeframe: str = "1m") -> Path:
     ext = "txt" if mtype == "lgb" else "pt"
-    return MODELS_DIR / label_config / model_config / f"{mtype}_{market}_{target}.{ext}"
+    return MODELS_DIR / timeframe / label_config / model_config / f"{mtype}_{market}_{target}.{ext}"
 
 
-def _splits_path(market: str, label_config: str, model_config: str, split: str) -> Path:
-    return MODELS_DIR / label_config / model_config / "splits" / f"{market}_{split}.parquet"
+def _splits_path(market: str, label_config: str, model_config: str, split: str, timeframe: str = "1m") -> Path:
+    return MODELS_DIR / timeframe / label_config / model_config / "splits" / f"{market}_{split}.parquet"
 
 
-def _predicted_path(market: str, label_config: str, model_config: str, model_type: str = "gbm") -> Path:
-    return PREDICTIONS_DIR / model_type / label_config / model_config / f"{market}_predicted.parquet"
+def _predicted_path(market: str, label_config: str, model_config: str, model_type: str = "gbm", timeframe: str = "1m") -> Path:
+    """Legacy single-file path (backward compat)."""
+    return PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / f"{market}_predicted.parquet"
 
 
-def _raw_symbols(market: str) -> list[str]:
+def _predicted_dir(market: str, label_config: str, model_config: str, model_type: str = "gbm", timeframe: str = "1m") -> Path:
+    """Partitioned prediction directory: .../market/ containing symbol/year.parquet."""
+    return PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / market
+
+
+def _raw_stock_dir(timeframe: str = "1m") -> Path:
+    """Return the raw stock directory for the given timeframe."""
+    if timeframe == "5m":
+        return RAW_GENERATED_DIR / "stock" / "5m"
+    return RAW_STOCK_DIR
+
+
+def _raw_symbols(market: str, timeframe: str = "1m") -> list[str]:
     """List available symbols in raw data directory."""
-    market_dir = RAW_STOCK_DIR / market
+    market_dir = _raw_stock_dir(timeframe) / market
     if not market_dir.exists():
         return []
     return sorted(d.name for d in market_dir.iterdir() if d.is_dir())
@@ -71,15 +109,15 @@ def _raw_symbols(market: str) -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def get_raw_date_range(market: str, symbol: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+def get_raw_date_range(market: str, symbol: str, timeframe: str = "1m") -> tuple[pd.Timestamp, pd.Timestamp] | None:
     """Get min/max datetime for a symbol by reading only the first and last parquet files."""
-    from src.collector.storage import RAW_STOCK_DIR as _RAW
+    raw_dir = _raw_stock_dir(timeframe)
 
-    symbol_dir = _RAW / market / symbol
+    symbol_dir = raw_dir / market / symbol
     if not symbol_dir.exists() and market == "kr":
         stripped = symbol.lstrip("0")
         if stripped != symbol:
-            symbol_dir = _RAW / market / stripped
+            symbol_dir = raw_dir / market / stripped
     if not symbol_dir.exists():
         return None
 
@@ -93,15 +131,15 @@ def get_raw_date_range(market: str, symbol: str) -> tuple[pd.Timestamp, pd.Times
 
 
 @st.cache_data(show_spinner="Loading trading dates...")
-def get_raw_trading_dates(market: str, symbol: str) -> list:
+def get_raw_trading_dates(market: str, symbol: str, timeframe: str = "1m") -> list:
     """Get unique trading dates for a symbol by reading only the datetime column."""
-    from src.collector.storage import RAW_STOCK_DIR as _RAW
+    raw_dir = _raw_stock_dir(timeframe)
 
-    symbol_dir = _RAW / market / symbol
+    symbol_dir = raw_dir / market / symbol
     if not symbol_dir.exists() and market == "kr":
         stripped = symbol.lstrip("0")
         if stripped != symbol:
-            symbol_dir = _RAW / market / stripped
+            symbol_dir = raw_dir / market / stripped
     if not symbol_dir.exists():
         return []
 
@@ -117,26 +155,46 @@ def get_raw_trading_dates(market: str, symbol: str) -> list:
 
 
 @st.cache_data(show_spinner="Loading raw bars...")
-def load_raw_bars(market: str, symbol: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+def load_raw_bars(market: str, symbol: str, start_date: str | None = None, end_date: str | None = None, timeframe: str = "1m") -> pd.DataFrame:
+    if timeframe == "5m":
+        # For 5m, load from raw-generated directory
+        raw_dir = _raw_stock_dir("5m")
+        symbol_dir = raw_dir / market / symbol
+        if not symbol_dir.exists():
+            return pd.DataFrame()
+        dfs = []
+        for pf in sorted(symbol_dir.glob("*.parquet")):
+            df = pd.read_parquet(pf)
+            dfs.append(df)
+        if not dfs:
+            return pd.DataFrame()
+        result = pd.concat(dfs, ignore_index=True)
+        result["datetime"] = pd.to_datetime(result["datetime"])
+        if start_date:
+            result = result[result["datetime"] >= pd.Timestamp(start_date)]
+        if end_date:
+            result = result[result["datetime"] < pd.Timestamp(end_date)]
+        return result.sort_values("datetime").reset_index(drop=True)
     from src.collector.storage import load_bars
     return load_bars(market, symbol, start_date, end_date)
 
 
 @st.cache_data(show_spinner="Scanning symbols...")
-def get_raw_symbols(market: str) -> list[str]:
-    return _raw_symbols(market)
+def get_raw_symbols(market: str, timeframe: str = "1m") -> list[str]:
+    return _raw_symbols(market, timeframe)
 
 
 @st.cache_data(show_spinner="Counting raw data...")
-def get_raw_summary(market: str) -> dict:
+def get_raw_summary(market: str, timeframe: str = "1m") -> dict:
     """Summarise raw data for a market: symbol count, total bars, date range."""
-    symbols = _raw_symbols(market)
+    symbols = _raw_symbols(market, timeframe)
     if not symbols:
         return {"exists": False}
+    raw_dir = _raw_stock_dir(timeframe)
     total_bars = 0
     min_dt, max_dt = None, None
     for sym in symbols:
-        sym_dir = RAW_STOCK_DIR / market / sym
+        sym_dir = raw_dir / market / sym
         for pf in sym_dir.glob("*.parquet"):
             try:
                 df = pd.read_parquet(pf, columns=["datetime"])
@@ -296,75 +354,141 @@ def load_options_ohlcv_by_strike(
 # ── Labeled data ──────────────────────────────────────────
 
 
-def _load_manual_overrides(market: str, label_config: str) -> pd.DataFrame:
+def _load_manual_overrides(market: str, label_config: str, timeframe: str = "1m") -> pd.DataFrame:
     """Load manual label overrides (empty DataFrame if none exist)."""
-    path = LABELED_MANUAL_DIR / label_config / f"{market}_manual.parquet"
-    if not path.exists():
-        return pd.DataFrame(columns=["symbol", "datetime", "label"])
-    return pd.read_parquet(path)
+    # Timeframe-aware path first
+    path = LABELED_MANUAL_DIR / timeframe / label_config / f"{market}_manual.parquet"
+    if path.exists():
+        return pd.read_parquet(path)
+    # Legacy fallback (no timeframe)
+    legacy = LABELED_MANUAL_DIR / label_config / f"{market}_manual.parquet"
+    if legacy.exists():
+        return pd.read_parquet(legacy)
+    return pd.DataFrame(columns=["symbol", "datetime", "label"])
 
 
 @st.cache_data(show_spinner=False)
-def get_labeled_symbols(market: str, label_config: str) -> list[str]:
-    """Return sorted symbol list from labeled parquet (lightweight — symbol column only)."""
-    path = _labeled_path(market, label_config)
-    if not path.exists():
+def get_labeled_symbols(market: str, label_config: str, timeframe: str = "1m") -> list[str]:
+    """Return sorted symbol list from labeled data."""
+    if _labeled_dir_exists(market, label_config, timeframe):
+        d = _labeled_path(market, label_config, timeframe)
+        return sorted(p.name for p in d.iterdir() if p.is_dir())
+    # Legacy fallback
+    legacy = _labeled_legacy_path(market, label_config, timeframe)
+    if not legacy.exists():
         return []
-    df = pd.read_parquet(path, columns=["symbol"])
+    df = pd.read_parquet(legacy, columns=["symbol"])
     return sorted(df["symbol"].unique().tolist())
 
 
 @st.cache_data(show_spinner=False)
-def get_labeled_date_range(market: str, label_config: str, symbol: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+def get_labeled_date_range(market: str, label_config: str, symbol: str, timeframe: str = "1m") -> tuple[pd.Timestamp, pd.Timestamp] | None:
     """Return (min, max) datetime for a symbol in labeled data."""
-    path = _labeled_path(market, label_config)
-    if not path.exists():
+    if _labeled_dir_exists(market, label_config, timeframe):
+        sym_dir = _labeled_path(market, label_config, timeframe) / symbol
+        if not sym_dir.exists():
+            return None
+        files = sorted(sym_dir.glob("*.parquet"))
+        if not files:
+            return None
+        first = pd.read_parquet(files[0], columns=["datetime"])
+        last = pd.read_parquet(files[-1], columns=["datetime"]) if len(files) > 1 else first
+        return first["datetime"].min(), last["datetime"].max()
+    # Legacy fallback
+    legacy = _labeled_legacy_path(market, label_config, timeframe)
+    if not legacy.exists():
         return None
-    df = pd.read_parquet(path, columns=["symbol", "datetime"], filters=[("symbol", "==", symbol)])
+    df = pd.read_parquet(legacy, columns=["symbol", "datetime"], filters=[("symbol", "==", symbol)])
     if df.empty:
         return None
     return df["datetime"].min(), df["datetime"].max()
 
 
 @st.cache_data(show_spinner=False)
-def get_labeled_trading_dates(market: str, label_config: str, symbol: str) -> list:
+def get_labeled_trading_dates(market: str, label_config: str, symbol: str, timeframe: str = "1m") -> list:
     """Return sorted list of trading dates for a symbol."""
-    path = _labeled_path(market, label_config)
-    if not path.exists():
+    if _labeled_dir_exists(market, label_config, timeframe):
+        sym_dir = _labeled_path(market, label_config, timeframe) / symbol
+        if not sym_dir.exists():
+            return []
+        dates = set()
+        for pf in sym_dir.glob("*.parquet"):
+            df = pd.read_parquet(pf, columns=["date"])
+            for d in df["date"].unique():
+                dates.add(pd.Timestamp(d).date() if not isinstance(d, date) else d)
+        return sorted(dates)
+    # Legacy fallback
+    legacy = _labeled_legacy_path(market, label_config, timeframe)
+    if not legacy.exists():
         return []
-    df = pd.read_parquet(path, columns=["symbol", "date"], filters=[("symbol", "==", symbol)])
+    df = pd.read_parquet(legacy, columns=["symbol", "date"], filters=[("symbol", "==", symbol)])
     if df.empty:
         return []
-    return sorted(df["date"].unique().tolist())
+    return sorted(pd.Timestamp(d).date() if not isinstance(d, date) else d for d in df["date"].unique())
 
 
 @st.cache_data(show_spinner=False)
-def get_labeled_symbol_stats(market: str, label_config: str, symbol: str) -> dict:
+def get_labeled_symbol_stats(market: str, label_config: str, symbol: str, timeframe: str = "1m") -> dict:
     """Return label counts for a symbol (lightweight — label column only)."""
-    path = _labeled_path(market, label_config)
-    if not path.exists():
+    if _labeled_dir_exists(market, label_config, timeframe):
+        sym_dir = _labeled_path(market, label_config, timeframe) / symbol
+        if not sym_dir.exists():
+            return {}
+        dfs = [pd.read_parquet(pf, columns=["label"]) for pf in sym_dir.glob("*.parquet")]
+        if not dfs:
+            return {}
+        df = pd.concat(dfs, ignore_index=True)
+        return df["label"].value_counts().to_dict()
+    # Legacy fallback
+    legacy = _labeled_legacy_path(market, label_config, timeframe)
+    if not legacy.exists():
         return {}
-    df = pd.read_parquet(path, columns=["symbol", "label"], filters=[("symbol", "==", symbol)])
+    df = pd.read_parquet(legacy, columns=["symbol", "label"], filters=[("symbol", "==", symbol)])
     return df["label"].value_counts().to_dict()
 
 
 @st.cache_data(show_spinner="Loading labeled data...")
-def load_labeled(market: str, label_config: str, symbol: str | None = None, date_str: str | None = None) -> pd.DataFrame:
-    """Load labeled data with optional symbol/date filtering via pyarrow pushdown."""
-    path = _labeled_path(market, label_config)
-    if not path.exists():
-        return pd.DataFrame()
+def load_labeled(market: str, label_config: str, symbol: str | None = None, date_str: str | None = None, timeframe: str = "1m") -> pd.DataFrame:
+    """Load labeled data with optional symbol/date filtering.
 
-    filters = []
-    if symbol is not None:
-        filters.append(("symbol", "==", symbol))
-    if date_str is not None:
-        import datetime
-        filters.append(("date", "==", datetime.date.fromisoformat(date_str)))
+    Supports both partitioned (symbol/year) and legacy single-file layouts.
+    """
+    if _labeled_dir_exists(market, label_config, timeframe):
+        base_dir = _labeled_path(market, label_config, timeframe)
+        files: list[Path] = []
+        if symbol is not None:
+            sym_dir = base_dir / symbol
+            if not sym_dir.exists():
+                return pd.DataFrame()
+            files = sorted(sym_dir.glob("*.parquet"))
+        else:
+            for sym_dir in sorted(base_dir.iterdir()):
+                if sym_dir.is_dir():
+                    files.extend(sorted(sym_dir.glob("*.parquet")))
+        if not files:
+            return pd.DataFrame()
+        df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    else:
+        legacy = _labeled_legacy_path(market, label_config, timeframe)
+        if not legacy.exists():
+            return pd.DataFrame()
+        filters = []
+        if symbol is not None:
+            filters.append(("symbol", "==", symbol))
+        if date_str is not None:
+            import datetime as _dt
+            filters.append(("date", "==", _dt.date.fromisoformat(date_str)))
+        df = pd.read_parquet(legacy, filters=filters if filters else None)
 
-    df = pd.read_parquet(path, filters=filters if filters else None)
     if df.empty:
         return df
+
+    # Apply date filter for partitioned layout
+    if date_str is not None and _labeled_dir_exists(market, label_config, timeframe):
+        import datetime as _dt
+        target = _dt.date.fromisoformat(date_str)
+        df["date"] = pd.to_datetime(df["date"]).dt.date if not isinstance(df["date"].iloc[0], _dt.date) else df["date"]
+        df = df[df["date"] == target]
 
     manual = _load_manual_overrides(market, label_config)
     if manual.empty:
@@ -385,9 +509,9 @@ def load_labeled(market: str, label_config: str, symbol: str | None = None, date
     return merged
 
 
-def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int, label_config: str) -> None:
+def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int, label_config: str, timeframe: str = "1m") -> None:
     """Upsert a manual label override and clear cache."""
-    manual = _load_manual_overrides(market, label_config)
+    manual = _load_manual_overrides(market, label_config, timeframe)
     dt = pd.to_datetime(datetime_str)
 
     mask = (manual["symbol"] == symbol) & (manual["datetime"] == dt)
@@ -402,19 +526,27 @@ def save_label_edit(market: str, symbol: str, datetime_str: str, new_label: int,
             ignore_index=True,
         )
 
-    out_dir = LABELED_MANUAL_DIR / label_config
+    out_dir = LABELED_MANUAL_DIR / timeframe / label_config
     out_dir.mkdir(parents=True, exist_ok=True)
     manual.to_parquet(out_dir / f"{market}_manual.parquet", index=False)
     st.cache_data.clear()
-    logger.info("Manual override saved: %s %s %s -> %d", label_config, symbol, datetime_str, new_label)
+    logger.info("Manual override saved: %s/%s %s %s -> %d", timeframe, label_config, symbol, datetime_str, new_label)
 
 
 @st.cache_data(show_spinner="Summarising labels...")
-def get_labeled_summary(market: str, label_config: str) -> dict:
-    path = _labeled_path(market, label_config)
-    if not path.exists():
-        return {"exists": False}
-    df = pd.read_parquet(path, columns=["label", "symbol", "datetime"])
+def get_labeled_summary(market: str, label_config: str, timeframe: str = "1m") -> dict:
+    if _labeled_dir_exists(market, label_config, timeframe):
+        base_dir = _labeled_path(market, label_config, timeframe)
+        files = sorted(base_dir.rglob("*.parquet"))
+        if not files:
+            return {"exists": False}
+        dfs = [pd.read_parquet(f, columns=["label", "symbol", "datetime"]) for f in files]
+        df = pd.concat(dfs, ignore_index=True)
+    else:
+        legacy = _labeled_legacy_path(market, label_config, timeframe)
+        if not legacy.exists():
+            return {"exists": False}
+        df = pd.read_parquet(legacy, columns=["label", "symbol", "datetime"])
     return {
         "exists": True,
         "total_bars": len(df),
@@ -428,33 +560,60 @@ def get_labeled_summary(market: str, label_config: str) -> dict:
 
 
 @st.cache_data(show_spinner="Loading predictions...")
-def load_predicted(market: str, label_config: str, model_config: str, model_type: str = "gbm") -> pd.DataFrame:
-    """Load predicted labels from PREDICTIONS_DIR."""
-    path = _predicted_path(market, label_config, model_config, model_type)
+def load_predicted(
+    market: str, label_config: str, model_config: str,
+    model_type: str = "gbm", timeframe: str = "1m",
+    symbol: str | None = None,
+) -> pd.DataFrame:
+    """Load predicted labels from PREDICTIONS_DIR.
+
+    Checks partitioned directory first, falls back to legacy single file.
+    """
+    # Partitioned layout: .../market/symbol/year.parquet
+    part_dir = _predicted_dir(market, label_config, model_config, model_type, timeframe)
+    if part_dir.exists() and part_dir.is_dir():
+        if symbol:
+            sym_dir = part_dir / symbol
+            if not sym_dir.exists():
+                return pd.DataFrame()
+            files = sorted(sym_dir.glob("*.parquet"))
+        else:
+            files = sorted(part_dir.rglob("*.parquet"))
+        if files:
+            dfs = [pd.read_parquet(f) for f in files]
+            return pd.concat(dfs, ignore_index=True)
+
+    # Legacy single-file fallback
+    path = _predicted_path(market, label_config, model_config, model_type, timeframe)
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
 
 
 @st.cache_data(show_spinner=False)
-def get_available_model_types(market: str, label_config: str, model_config: str) -> list[str]:
+def get_available_model_types(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> list[str]:
     """Scan PREDICTIONS_DIR for available model_type subdirectories that have data."""
     available = []
     for mt in ("gbm", "lstm", "ensemble"):
-        path = _predicted_path(market, label_config, model_config, mt)
-        if path.exists():
+        part_dir = _predicted_dir(market, label_config, model_config, mt, timeframe)
+        legacy_path = _predicted_path(market, label_config, model_config, mt, timeframe)
+        if (part_dir.exists() and any(part_dir.rglob("*.parquet"))) or legacy_path.exists():
             available.append(mt)
     return available
 
 
 @st.cache_data(show_spinner=False)
-def find_configs_for_model_type(market: str, model_type: str) -> list[tuple[str, str]]:
+def find_configs_for_model_type(market: str, model_type: str, timeframe: str = "1m") -> list[tuple[str, str]]:
     """Find all (label_config, model_config) pairs that have prediction data for a model_type."""
-    from config.variants import LABEL_CONFIGS, MODEL_CONFIGS
+    from config.variants import get_label_configs, get_model_configs
+    label_configs = get_label_configs(timeframe)
+    model_configs = get_model_configs(timeframe)
     results = []
-    for lc in sorted(LABEL_CONFIGS.keys()):
-        for mc in sorted(MODEL_CONFIGS.keys()):
-            if _predicted_path(market, lc, mc, model_type).exists():
+    for lc in sorted(label_configs.keys()):
+        for mc in sorted(model_configs.keys()):
+            part_dir = _predicted_dir(market, lc, mc, model_type, timeframe)
+            legacy_path = _predicted_path(market, lc, mc, model_type, timeframe)
+            if (part_dir.exists() and any(part_dir.rglob("*.parquet"))) or legacy_path.exists():
                 results.append((lc, mc))
     return results
 
@@ -462,11 +621,11 @@ def find_configs_for_model_type(market: str, model_type: str) -> list[tuple[str,
 # ── Split info ────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
-def load_split_dates(market: str, label_config: str, model_config: str) -> dict[str, set[str]]:
+def load_split_dates(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> dict[str, set[str]]:
     """Return {split_name: set_of_date_strings} for train/val/test."""
     result: dict[str, set[str]] = {}
     for split in ("train", "val", "test"):
-        path = _splits_path(market, label_config, model_config, split)
+        path = _splits_path(market, label_config, model_config, split, timeframe)
         if path.exists():
             dates = pd.read_parquet(path, columns=["date"])["date"].astype(str).unique()
             result[split] = set(dates)
@@ -536,14 +695,24 @@ def load_backtest(name: str, symbol: str | None = None, date_str: str | None = N
 
 
 @st.cache_data(show_spinner="Loading feature columns...")
-def get_feature_column_list(market: str, label_config: str, model_config: str) -> list[str]:
+def get_feature_column_list(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> list[str]:
     """Read only the column names from featured parquet (fast)."""
-    path = _featured_path(market, label_config, model_config)
-    if not path.exists():
-        return []
     import pyarrow.parquet as pq
-    schema = pq.read_schema(path)
     from src.features.feature_pipeline import FEATURE_PREFIXES
+
+    if _featured_dir_exists(market, label_config, model_config, timeframe):
+        d = _featured_path(market, label_config, model_config, timeframe)
+        # Read schema from the first parquet file found
+        first_file = next(d.rglob("*.parquet"), None)
+        if first_file is None:
+            return []
+        schema = pq.read_schema(first_file)
+    else:
+        legacy = _featured_legacy_path(market, label_config, model_config, timeframe)
+        if not legacy.exists():
+            return []
+        schema = pq.read_schema(legacy)
+
     return sorted(
         col for col in schema.names
         if any(col.startswith(p) for p in FEATURE_PREFIXES)
@@ -551,36 +720,67 @@ def get_feature_column_list(market: str, label_config: str, model_config: str) -
 
 
 @st.cache_data(show_spinner="Loading features...")
-def load_featured(market: str, label_config: str, model_config: str, columns: list[str] | None = None, max_rows: int = 50_000) -> pd.DataFrame:
+def load_featured(market: str, label_config: str, model_config: str, columns: list[str] | None = None, max_rows: int = 50_000, timeframe: str = "1m") -> pd.DataFrame:
     """Load featured parquet with optional column filtering and row sampling."""
-    path = _featured_path(market, label_config, model_config)
-    if not path.exists():
-        return pd.DataFrame()
     read_cols = None
     if columns:
         meta_cols = ["datetime", "symbol", "date", "label", "minutes_from_open"]
         read_cols = list(set(meta_cols + columns))
-    df = pd.read_parquet(path, columns=read_cols)
+
+    if _featured_dir_exists(market, label_config, model_config, timeframe):
+        d = _featured_path(market, label_config, model_config, timeframe)
+        files = sorted(d.rglob("*.parquet"))
+        if not files:
+            return pd.DataFrame()
+        dfs = [pd.read_parquet(f, columns=read_cols) for f in files]
+        df = pd.concat(dfs, ignore_index=True)
+    else:
+        legacy = _featured_legacy_path(market, label_config, model_config, timeframe)
+        if not legacy.exists():
+            return pd.DataFrame()
+        df = pd.read_parquet(legacy, columns=read_cols)
+
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).sort_values("datetime").reset_index(drop=True)
     return df
 
 
 @st.cache_data(show_spinner="Summarising features...")
-def get_featured_summary(market: str, label_config: str, model_config: str) -> dict:
-    path = _featured_path(market, label_config, model_config)
-    if not path.exists():
-        return {"exists": False}
+def get_featured_summary(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> dict:
     import pyarrow.parquet as pq
-    meta = pq.read_metadata(path)
-    schema = pq.read_schema(path)
     from src.features.feature_pipeline import FEATURE_PREFIXES
+
+    if _featured_dir_exists(market, label_config, model_config, timeframe):
+        d = _featured_path(market, label_config, model_config, timeframe)
+        files = sorted(d.rglob("*.parquet"))
+        if not files:
+            return {"exists": False}
+        total_rows = 0
+        total_size = 0
+        schema = pq.read_schema(files[0])
+        for f in files:
+            meta = pq.read_metadata(f)
+            total_rows += meta.num_rows
+            total_size += f.stat().st_size
+        feat_cols = [c for c in schema.names if any(c.startswith(p) for p in FEATURE_PREFIXES)]
+        return {
+            "exists": True,
+            "total_rows": total_rows,
+            "n_features": len(feat_cols),
+            "file_size_mb": round(total_size / 1024 / 1024, 1),
+        }
+
+    legacy = _featured_legacy_path(market, label_config, model_config, timeframe)
+    if not legacy.exists():
+        return {"exists": False}
+    meta = pq.read_metadata(legacy)
+    schema = pq.read_schema(legacy)
     feat_cols = [c for c in schema.names if any(c.startswith(p) for p in FEATURE_PREFIXES)]
     return {
         "exists": True,
         "total_rows": meta.num_rows,
         "n_features": len(feat_cols),
-        "file_size_mb": round(path.stat().st_size / 1024 / 1024, 1),
+        "file_size_mb": round(legacy.stat().st_size / 1024 / 1024, 1),
     }
 
 
@@ -588,22 +788,24 @@ def get_featured_summary(market: str, label_config: str, model_config: str) -> d
 
 
 @st.cache_data(show_spinner="Evaluating model...", ttl=3600)
-def run_model_evaluation(market: str, label_config: str, model_config: str) -> dict | None:
+def run_model_evaluation(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> dict | None:
     """Load LightGBM models and run full_evaluation on the test split."""
-    featured_path = _featured_path(market, label_config, model_config)
-    peak_model_path = _model_path(market, label_config, model_config, "lgb", "peak")
-    trough_model_path = _model_path(market, label_config, model_config, "lgb", "trough")
+    peak_model_path = _model_path(market, label_config, model_config, "lgb", "peak", timeframe)
+    trough_model_path = _model_path(market, label_config, model_config, "lgb", "trough", timeframe)
 
-    if not all(p.exists() for p in [featured_path, peak_model_path, trough_model_path]):
+    has_featured = _featured_dir_exists(market, label_config, model_config, timeframe) or _featured_legacy_path(market, label_config, model_config, timeframe).exists()
+    if not has_featured or not peak_model_path.exists() or not trough_model_path.exists():
         return None
 
     import numpy as np
-    from src.features.feature_pipeline import get_all_feature_columns
+    from src.features.feature_pipeline import get_all_feature_columns, load_all_featured
     from src.model.dataset import prepare_xy, time_based_split
     from src.model.evaluate import full_evaluation
     from src.model.train_gbm import load_model
 
-    df = pd.read_parquet(featured_path)
+    df = load_all_featured(market, label_config, model_config, timeframe)
+    if df.empty:
+        return None
     feature_cols = get_all_feature_columns(df)
     split = time_based_split(df)
 
@@ -627,22 +829,24 @@ def run_model_evaluation(market: str, label_config: str, model_config: str) -> d
 
 
 @st.cache_data(show_spinner="Computing PR curve data...", ttl=3600)
-def get_pr_curve_data(market: str, label_config: str, model_config: str, target_label: int) -> dict | None:
+def get_pr_curve_data(market: str, label_config: str, model_config: str, target_label: int, timeframe: str = "1m") -> dict | None:
     """Get precision-recall curve arrays for plotting."""
-    featured_path = _featured_path(market, label_config, model_config)
     label_name = "peak" if target_label == 1 else "trough"
-    model_path = _model_path(market, label_config, model_config, "lgb", label_name)
+    model_path = _model_path(market, label_config, model_config, "lgb", label_name, timeframe)
 
-    if not featured_path.exists() or not model_path.exists():
+    has_featured = _featured_dir_exists(market, label_config, model_config, timeframe) or _featured_legacy_path(market, label_config, model_config, timeframe).exists()
+    if not has_featured or not model_path.exists():
         return None
 
     import numpy as np
     from sklearn.metrics import precision_recall_curve
-    from src.features.feature_pipeline import get_all_feature_columns
+    from src.features.feature_pipeline import get_all_feature_columns, load_all_featured
     from src.model.dataset import prepare_xy, time_based_split
     from src.model.train_gbm import load_model
 
-    df = pd.read_parquet(featured_path)
+    df = load_all_featured(market, label_config, model_config, timeframe)
+    if df.empty:
+        return None
     feature_cols = get_all_feature_columns(df)
     split = time_based_split(df)
 
@@ -659,22 +863,31 @@ def get_pr_curve_data(market: str, label_config: str, model_config: str, target_
 
 
 @st.cache_data(show_spinner="Loading feature importance...", ttl=3600)
-def get_feature_importance(market: str, label_config: str, model_config: str, target_label: int, top_n: int = 20) -> pd.DataFrame:
+def get_feature_importance(market: str, label_config: str, model_config: str, target_label: int, top_n: int = 20, timeframe: str = "1m") -> pd.DataFrame:
     """Extract feature importance from LightGBM model."""
     label_name = "peak" if target_label == 1 else "trough"
-    model_path = _model_path(market, label_config, model_config, "lgb", label_name)
-    featured_path = _featured_path(market, label_config, model_config)
+    model_path = _model_path(market, label_config, model_config, "lgb", label_name, timeframe)
 
-    if not model_path.exists() or not featured_path.exists():
+    has_featured = _featured_dir_exists(market, label_config, model_config, timeframe) or _featured_legacy_path(market, label_config, model_config, timeframe).exists()
+    if not model_path.exists() or not has_featured:
         return pd.DataFrame()
 
     import lightgbm as lgb
-    from src.features.feature_pipeline import get_all_feature_columns
+    import pyarrow.parquet as pq
+    from src.features.feature_pipeline import FEATURE_PREFIXES, get_all_feature_columns
 
     model = lgb.Booster(model_file=str(model_path))
 
-    import pyarrow.parquet as pq
-    schema = pq.read_schema(featured_path)
+    # Get schema from any available parquet file
+    if _featured_dir_exists(market, label_config, model_config, timeframe):
+        d = _featured_path(market, label_config, model_config, timeframe)
+        first_file = next(d.rglob("*.parquet"), None)
+        if first_file is None:
+            return pd.DataFrame()
+        schema = pq.read_schema(first_file)
+    else:
+        schema = pq.read_schema(_featured_legacy_path(market, label_config, model_config, timeframe))
+
     df_tmp = pd.DataFrame(columns=schema.names)
     feature_cols = get_all_feature_columns(df_tmp)
 
@@ -690,11 +903,11 @@ def get_feature_importance(market: str, label_config: str, model_config: str, ta
 # ── Model file checks ────────────────────────────────────
 
 
-def get_model_status(market: str, label_config: str, model_config: str) -> dict:
+def get_model_status(market: str, label_config: str, model_config: str, timeframe: str = "1m") -> dict:
     """Check existence of model files for a market."""
     models = {}
     for mtype in ["lgb", "lstm"]:
         for target in ["peak", "trough"]:
-            path = _model_path(market, label_config, model_config, mtype, target)
+            path = _model_path(market, label_config, model_config, mtype, target, timeframe)
             models[f"{mtype}_{target}"] = path.exists()
     return models

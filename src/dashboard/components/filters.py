@@ -19,17 +19,23 @@ def market_selector(key: str = "market") -> str:
     return st.sidebar.radio("Market", ["us", "kr"], format_func=str.upper, key=key, horizontal=True)
 
 
-def label_config_selector(key: str = "label_config") -> str:
-    """L1/L2 radio selector. Loads keys from variants.py."""
-    from config.variants import LABEL_CONFIGS
-    options = sorted(LABEL_CONFIGS.keys())
+def timeframe_selector(key: str = "timeframe") -> str:
+    """Timeframe selector (1m/5m). Value auto-stored in session_state via widget key."""
+    from config.settings import SUPPORTED_TIMEFRAMES
+    return st.sidebar.selectbox("Timeframe", SUPPORTED_TIMEFRAMES, key=key)
+
+
+def label_config_selector(key: str = "label_config", timeframe: str = "1m") -> str:
+    """L1/L2/L3 radio selector. Loads keys from variants.py based on timeframe."""
+    from config.variants import get_label_configs
+    options = sorted(get_label_configs(timeframe).keys())
     return st.sidebar.radio("Label Config", options, key=key, horizontal=True)
 
 
-def model_config_selector(key: str = "model_config") -> str:
-    """M1~M4 radio selector. Loads keys from variants.py."""
-    from config.variants import MODEL_CONFIGS
-    options = sorted(MODEL_CONFIGS.keys())
+def model_config_selector(key: str = "model_config", timeframe: str = "1m") -> str:
+    """M1~M4 radio selector. Loads keys from variants.py based on timeframe."""
+    from config.variants import get_model_configs
+    options = sorted(get_model_configs(timeframe).keys())
     return st.sidebar.radio("Model Config", options, key=key, horizontal=True)
 
 

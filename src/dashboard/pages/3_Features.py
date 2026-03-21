@@ -16,7 +16,8 @@ from dashboard.components.charts import (
     make_violin_by_label,
 )
 from dashboard.components.filters import (
-    feature_selector, label_config_selector, market_selector, model_config_selector, reload_button,
+    feature_selector, label_config_selector, market_selector, model_config_selector,
+    reload_button, timeframe_selector,
 )
 from dashboard.data_loader import get_feature_column_list, get_featured_summary, load_featured
 
@@ -26,18 +27,19 @@ st.title("Phase 2: Feature Analysis")
 # ── Sidebar ───────────────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 market = market_selector(key="feat_market")
-lc = label_config_selector(key="feat_lc")
-mc = model_config_selector(key="feat_mc")
+lc = label_config_selector(key="feat_lc", timeframe=timeframe)
+mc = model_config_selector(key="feat_mc", timeframe=timeframe)
 
-summary = get_featured_summary(market, lc, mc)
+summary = get_featured_summary(market, lc, mc, timeframe)
 if not summary.get("exists"):
-    st.warning(f"No featured data for **{market.upper()}**. Run: `python run_pipeline.py features --market {market}`")
+    st.warning(f"No featured data for **{market.upper()}** [{timeframe}]. Run: `python run_pipeline.py features --market {market}`")
     st.stop()
 
 st.sidebar.markdown(f"**Rows:** {summary['total_rows']:,}  |  **Features:** {summary['n_features']}  |  **Size:** {summary['file_size_mb']} MB")
 
-all_features = get_feature_column_list(market, lc, mc)
+all_features = get_feature_column_list(market, lc, mc, timeframe)
 selected_features = feature_selector(all_features, key="feat_sel")
 
 if not selected_features:
@@ -46,16 +48,16 @@ if not selected_features:
 
 # ── Load data ─────────────────────────────────────────────
 
-df = load_featured(market, lc, mc, columns=selected_features)
+df = load_featured(market, lc, mc, columns=selected_features, timeframe=timeframe)
 if df.empty:
     st.warning("Failed to load featured data.")
     st.stop()
 
-st.caption(f"Loaded {len(df):,} rows (sampled if > 50k)")
+st.caption(f"Loaded {len(df):,} rows (sampled if > 50k) [{timeframe}]")
 
 # ── Feature summary table ────────────────────────────────
 
-st.subheader("Feature Summary")
+st.subheader(f"Feature Summary [{timeframe}]")
 valid_cols = [c for c in selected_features if c in df.columns]
 if valid_cols:
     st.dataframe(df[valid_cols].describe().T, use_container_width=True)

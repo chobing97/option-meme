@@ -17,6 +17,7 @@ from dashboard.components.charts import (
 )
 from dashboard.components.filters import (
     label_config_selector, market_selector, model_config_selector, reload_button,
+    timeframe_selector,
 )
 from dashboard.components.metrics import backtest_summary
 from dashboard.data_loader import (
@@ -32,14 +33,15 @@ st.title("Phase 3: Model Performance")
 # ── Sidebar ───────────────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 market = market_selector(key="model_market")
-lc = label_config_selector(key="model_lc")
-mc = model_config_selector(key="model_mc")
+lc = label_config_selector(key="model_lc", timeframe=timeframe)
+mc = model_config_selector(key="model_mc", timeframe=timeframe)
 
 # ── Model file check ─────────────────────────────────────
 
-model_status = get_model_status(market, lc, mc)
-st.subheader("Model Files")
+model_status = get_model_status(market, lc, mc, timeframe)
+st.subheader(f"Model Files [{timeframe}]")
 
 cols = st.columns(4)
 for i, (name, exists) in enumerate(model_status.items()):
@@ -50,7 +52,7 @@ for i, (name, exists) in enumerate(model_status.items()):
             st.error(f"{name}: missing")
 
 if not any(model_status.values()):
-    st.warning(f"No models found for **{market.upper()}**. Run: `python run_pipeline.py model --market {market}`")
+    st.warning(f"No models found for **{market.upper()}** [{timeframe}]. Run: `python run_pipeline.py model --market {market}`")
     st.stop()
 
 # ── Full evaluation ───────────────────────────────────────
@@ -62,10 +64,10 @@ if not (lgb_peak and lgb_trough):
     st.warning("LightGBM peak and trough models are required for evaluation.")
     st.stop()
 
-st.subheader("Evaluation (LightGBM)")
+st.subheader(f"Evaluation (LightGBM) [{timeframe}]")
 st.caption("Results are cached for 1 hour.")
 
-eval_result = run_model_evaluation(market, lc, mc)
+eval_result = run_model_evaluation(market, lc, mc, timeframe)
 if eval_result is None:
     st.warning("Evaluation failed — check that featured data and models exist.")
     st.stop()
@@ -88,7 +90,7 @@ pr_col1, pr_col2 = st.columns(2)
 
 for col, target_label, label_name in [(pr_col1, 1, "Peak"), (pr_col2, 2, "Trough")]:
     with col:
-        pr_data = get_pr_curve_data(market, lc, mc, target_label)
+        pr_data = get_pr_curve_data(market, lc, mc, target_label, timeframe)
         if pr_data:
             st.plotly_chart(make_pr_curve(pr_data, label_name), use_container_width=True)
         else:
@@ -138,7 +140,7 @@ fi_col1, fi_col2 = st.columns(2)
 
 for col, target_label, label_name in [(fi_col1, 1, "Peak"), (fi_col2, 2, "Trough")]:
     with col:
-        imp_df = get_feature_importance(market, lc, mc, target_label)
+        imp_df = get_feature_importance(market, lc, mc, target_label, timeframe=timeframe)
         if not imp_df.empty:
             st.plotly_chart(make_feature_importance_bar(imp_df), use_container_width=True)
         else:

@@ -13,6 +13,7 @@ from dashboard.components.charts import make_editable_candlestick, make_label_di
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
     label_config_selector, market_selector, reload_button, symbol_selector,
+    timeframe_selector,
 )
 from dashboard.data_loader import (
     get_labeled_date_range, get_labeled_symbol_stats, get_labeled_symbols,
@@ -27,12 +28,13 @@ kb_dir = kb_nav_read()
 # ── Sidebar ───────────────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 market = market_selector(key="label_market")
-label_config = label_config_selector(key="label_lc")
+label_config = label_config_selector(key="label_lc", timeframe=timeframe)
 
-symbols = get_labeled_symbols(market, label_config)
+symbols = get_labeled_symbols(market, label_config, timeframe)
 if not symbols:
-    st.warning(f"No labeled data for **{market.upper()}**. Run: `python run_pipeline.py labeler --market {market}`")
+    st.warning(f"No labeled data for **{market.upper()}** [{timeframe}]. Run: `python run_pipeline.py labeler --market {market}`")
     st.stop()
 
 name_map = get_stock_name_map(market)
@@ -42,7 +44,7 @@ if symbol is None:
     st.stop()
 
 # Date range (lightweight)
-date_range = get_labeled_date_range(market, label_config, symbol)
+date_range = get_labeled_date_range(market, label_config, symbol, timeframe)
 if date_range is None:
     st.info(f"No labeled data for {symbol}")
     st.stop()
@@ -51,7 +53,7 @@ min_dt, max_dt = date_range[0].date(), date_range[1].date()
 start, end = date_range_selector(min_dt, max_dt, key="label_dates")
 
 # Trading dates (lightweight)
-all_dates = get_labeled_trading_dates(market, label_config, symbol)
+all_dates = get_labeled_trading_dates(market, label_config, symbol, timeframe)
 dates = [d for d in all_dates if start <= d <= end]
 if not dates:
     st.info("No data in selected range.")
@@ -61,8 +63,8 @@ stock_label = f"{symbol}({name_map[symbol]})" if symbol in name_map else symbol
 
 # ── Label distribution ────────────────────────────────────
 
-st.subheader("Label Distribution")
-label_counts = get_labeled_symbol_stats(market, label_config, symbol)
+st.subheader(f"Label Distribution [{timeframe}]")
+label_counts = get_labeled_symbol_stats(market, label_config, symbol, timeframe)
 
 cols = st.columns(4)
 cols[0].metric("Total Bars", f"{sum(label_counts.values()):,}")
@@ -74,14 +76,14 @@ st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 
 # ── Per-day chart (interactive editing) ───────────────────
 
-st.subheader(f"Labeled Chart — {stock_label}")
+st.subheader(f"Labeled Chart [{timeframe}] — {stock_label}")
 st.caption("Click a bar to cycle label: **None → Peak → Trough → None**")
 
 kb_nav_apply_date(kb_dir, dates, "label_chart_date")
 selected_date = st.select_slider("Date", options=dates, value=dates[-1], key="label_chart_date")
 
 # Load only 1 day of data for the selected symbol
-day_df = load_labeled(market, label_config, symbol=symbol, date_str=str(selected_date))
+day_df = load_labeled(market, label_config, symbol=symbol, date_str=str(selected_date), timeframe=timeframe)
 
 if not day_df.empty:
     fig = make_editable_candlestick(day_df, f"{stock_label} — {selected_date}")
@@ -108,7 +110,7 @@ if not day_df.empty:
             if not match.empty:
                 current_label = int(match.iloc[0]["label"])
                 new_label = (current_label + 1) % 3  # 0→1→2→0
-                save_label_edit(market, symbol, clicked_dt, new_label, label_config)
+                save_label_edit(market, symbol, clicked_dt, new_label, label_config, timeframe)
                 st.rerun()
 
 # ── Label stats ───────────────────────────────────────────

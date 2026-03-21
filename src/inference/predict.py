@@ -18,11 +18,14 @@ def predict_all(
     threshold: float = 0.5,
     label_config: Optional[str] = None,
     model_config: Optional[str] = None,
+    timeframe: str = "1m",
 ) -> pd.DataFrame:
     """Batch predict all symbols/dates from featured parquet.
 
-    Loads the pre-computed featured data, runs model prediction on all rows
-    at once, and saves results in labeled parquet format with probabilities.
+    Processes per symbol to keep peak memory low.  Results are saved
+    partitioned by symbol/year under::
+
+        PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / market / symbol / {year}.parquet
 
     Args:
         market: 'kr' or 'us'
@@ -30,92 +33,171 @@ def predict_all(
         threshold: Probability threshold for peak/trough classification
         label_config: Label variant key (e.g. 'L1', 'L2'). None for legacy path.
         model_config: Model variant key (e.g. 'M1'~'M4'). None for legacy path.
+        timeframe: Timeframe key ('1m' or '5m'). Default '1m'.
 
     Returns:
-        DataFrame with predictions in labeled format (includes peak_prob, trough_prob).
+        Summary DataFrame (last symbol's result for backward compat).
     """
-    from src.features.feature_pipeline import get_all_feature_columns, get_base_feature_columns
+    from src.features.feature_pipeline import (
+        get_all_feature_columns,
+        get_base_feature_columns,
+        list_featured_symbols,
+    )
     from src.model.train_gbm import load_model
 
-    # 1. Load featured data (variant-aware path)
+    # 1. Resolve models directory
     if label_config and model_config:
-        featured_path = PROCESSED_DIR / "featured" / label_config / model_config / f"{market}_featured.parquet"
-    else:
-        featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
-    if not featured_path.exists():
-        raise FileNotFoundError(
-            f"Featured data not found: {featured_path}\n"
-            f"Run features first: ./optionmeme features --market {market}"
-        )
-
-    df = pd.read_parquet(featured_path)
-    logger.info(f"Loaded {len(df)} rows from {featured_path}")
-
-    # 2. Resolve models directory
-    if label_config and model_config:
-        models_dir = DATA_DIR / "models" / label_config / model_config
+        models_dir = DATA_DIR / "models" / timeframe / label_config / model_config
     else:
         models_dir = DATA_DIR / "models"
 
-    # 3. Run prediction based on model_type
-    if model_type == "lstm":
-        peak_proba, trough_proba = _lstm_batch(
-            df=df,
-            models_dir=models_dir,
-            market=market,
-            model_config=model_config,
+    # 2. Legacy path: single file, load all at once
+    if not (label_config and model_config):
+        featured_path = PROCESSED_DIR / "featured" / f"{market}_featured.parquet"
+        if not featured_path.exists():
+            raise FileNotFoundError(
+                f"Featured data not found: {featured_path}\n"
+                f"Run features first: ./optionmeme features --market {market}"
+            )
+        df = pd.read_parquet(featured_path)
+        pred_base = PREDICTIONS_DIR / market
+        return _predict_and_save_legacy(
+            df, market, model_type, threshold, models_dir, pred_base,
         )
-        logger.info("LSTM prediction complete")
-    else:
-        # GBM or Ensemble (both start with GBM)
-        feature_cols = get_all_feature_columns(df)
-        if not feature_cols:
-            raise ValueError("No feature columns found in featured data")
-        logger.info(f"Using {len(feature_cols)} feature columns")
 
-        X = df[feature_cols].values.astype(np.float32)
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
+    # 3. Partitioned path: load GBM models once
+    if model_type in ("gbm", "ensemble"):
         peak_path = models_dir / f"lgb_{market}_peak.txt"
         trough_path = models_dir / f"lgb_{market}_trough.txt"
-
         if not peak_path.exists() or not trough_path.exists():
             raise FileNotFoundError(
                 f"LightGBM models not found at {models_dir}\n"
                 f"Train first: ./optionmeme model --market {market} --model gbm"
             )
-
         peak_model = load_model(peak_path)
         trough_model = load_model(trough_path)
 
-        peak_proba = peak_model.predict(X)
-        trough_proba = trough_model.predict(X)
-        logger.info("GBM prediction complete")
+    # 4. Determine prediction save directory
+    pred_base = PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / market
 
-        if model_type == "ensemble":
-            peak_proba, trough_proba = _ensemble_batch(
-                df=df,
-                gbm_peak_proba=peak_proba,
-                gbm_trough_proba=trough_proba,
-                models_dir=models_dir,
-                market=market,
-                label_config=label_config,
-                model_config=model_config,
-            )
-            logger.info("Ensemble prediction complete")
+    # 5. Get symbols to predict
+    symbols = list_featured_symbols(market, label_config, model_config, timeframe)
 
-    # 6. Vectorized label assignment
-    peak_proba = np.asarray(peak_proba)
-    trough_proba = np.asarray(trough_proba)
+    if not symbols:
+        raise FileNotFoundError(
+            f"No featured data for {market} [{label_config}/{model_config}]\n"
+            f"Run features first: ./optionmeme features --market {market}"
+        )
+
+    # 5. Process per symbol
+    from pathlib import Path
+    from src.features.feature_pipeline import _featured_dir
+
+    feat_base = _featured_dir() / timeframe / label_config / model_config / market
+    total_peaks = 0
+    total_troughs = 0
+    total_rows = 0
+    last_result = pd.DataFrame()
+
+    for symbol in symbols:
+        sym_dir = feat_base / symbol
+        if not sym_dir.exists():
+            continue
+
+        parquet_files = sorted(sym_dir.glob("*.parquet"))
+        for pf in parquet_files:
+            year = pf.stem
+            df = pd.read_parquet(pf)
+            if df.empty:
+                continue
+
+            # Get feature columns from first file
+            feature_cols = get_all_feature_columns(df)
+            if not feature_cols:
+                continue
+
+            # Predict
+            X = df[feature_cols].values.astype(np.float32)
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+            peak_proba = peak_model.predict(X)
+            trough_proba = trough_model.predict(X)
+
+            # Label assignment
+            labels = np.zeros(len(df), dtype=np.int8)
+            labels[(peak_proba >= threshold) & (peak_proba > trough_proba)] = 1
+            labels[(trough_proba >= threshold) & (trough_proba > peak_proba)] = 2
+
+            # Build output
+            output_cols = ["datetime", "open", "high", "low", "close", "volume",
+                           "date", "minutes_from_open", "symbol", "market"]
+            output_cols = [c for c in output_cols if c in df.columns]
+
+            result = df[output_cols].copy()
+            result["label"] = labels
+            result["peak_prob"] = np.round(peak_proba, 4).astype(np.float32)
+            result["trough_prob"] = np.round(trough_proba, 4).astype(np.float32)
+
+            # Save partitioned
+            out_dir = pred_base / symbol
+            out_dir.mkdir(parents=True, exist_ok=True)
+            result.to_parquet(out_dir / f"{year}.parquet", index=False, compression="snappy")
+
+            total_peaks += int((labels == 1).sum())
+            total_troughs += int((labels == 2).sum())
+            total_rows += len(result)
+            last_result = result
+
+            del df, X, result
+
+    logger.info(
+        f"Predicted {market}: {total_rows:,} rows, "
+        f"peaks={total_peaks:,}, troughs={total_troughs:,}, "
+        f"saved to {pred_base}"
+    )
+
+    return last_result
+
+
+def _predict_and_save_legacy(
+    df: pd.DataFrame,
+    market: str,
+    model_type: str,
+    threshold: float,
+    models_dir,
+    pred_base,
+) -> pd.DataFrame:
+    """Legacy predict path for non-partitioned data."""
+    from src.features.feature_pipeline import get_all_feature_columns
+    from src.model.train_gbm import load_model
+
+    feature_cols = get_all_feature_columns(df)
+    if not feature_cols:
+        raise ValueError("No feature columns found in featured data")
+
+    X = df[feature_cols].values.astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    peak_path = models_dir / f"lgb_{market}_peak.txt"
+    trough_path = models_dir / f"lgb_{market}_trough.txt"
+    if not peak_path.exists() or not trough_path.exists():
+        raise FileNotFoundError(
+            f"LightGBM models not found at {models_dir}\n"
+            f"Train first: ./optionmeme model --market {market} --model gbm"
+        )
+
+    peak_model = load_model(peak_path)
+    trough_model = load_model(trough_path)
+
+    peak_proba = peak_model.predict(X)
+    trough_proba = trough_model.predict(X)
 
     labels = np.zeros(len(df), dtype=np.int8)
     labels[(peak_proba >= threshold) & (peak_proba > trough_proba)] = 1
     labels[(trough_proba >= threshold) & (trough_proba > peak_proba)] = 2
 
-    # 7. Build output DataFrame in labeled format
     output_cols = ["datetime", "open", "high", "low", "close", "volume",
                    "date", "minutes_from_open", "symbol", "market"]
-    # Only keep columns that exist in df
     output_cols = [c for c in output_cols if c in df.columns]
 
     result = df[output_cols].copy()
@@ -123,22 +205,11 @@ def predict_all(
     result["peak_prob"] = np.round(peak_proba, 4).astype(np.float32)
     result["trough_prob"] = np.round(trough_proba, 4).astype(np.float32)
 
-    # 8. Save (variant-aware path: model_type / label_config / model_config)
-    if label_config and model_config:
-        pred_dir = PREDICTIONS_DIR / model_type / label_config / model_config
-    else:
-        pred_dir = PREDICTIONS_DIR
-    pred_dir.mkdir(parents=True, exist_ok=True)
-    output_path = pred_dir / f"{market}_predicted.parquet"
+    pred_base.mkdir(parents=True, exist_ok=True)
+    output_path = pred_base / f"{market}_predicted.parquet"
     result.to_parquet(output_path, index=False, compression="snappy")
 
-    n_peaks = int((labels == 1).sum())
-    n_troughs = int((labels == 2).sum())
-    logger.info(
-        f"Saved {len(result)} rows to {output_path} "
-        f"(peaks={n_peaks}, troughs={n_troughs}, neither={len(result) - n_peaks - n_troughs})"
-    )
-
+    logger.info(f"Saved {len(result)} rows to {output_path}")
     return result
 
 
@@ -150,6 +221,7 @@ def predict_symbol(
     date: Optional[str] = None,
     label_config: Optional[str] = None,
     model_config: Optional[str] = None,
+    timeframe: str = "1m",
 ) -> dict:
     """Run prediction pipeline for a single symbol.
 
@@ -161,6 +233,7 @@ def predict_symbol(
         date: Target date (YYYY-MM-DD). Latest trading day if None.
         label_config: Label variant key (e.g. 'L1', 'L2'). None for legacy path.
         model_config: Model variant key (e.g. 'M1'~'M4'). None for legacy path.
+        timeframe: Timeframe key ('1m' or '5m'). Default '1m'.
 
     Returns:
         Dict with prediction results, signals, and metadata.
@@ -172,7 +245,7 @@ def predict_symbol(
         clean_features,
         get_all_feature_columns,
     )
-    from src.labeler.session_extractor import extract_early_session
+    from src.labeler.session_extractor import extract_session
 
     # Resolve model variant settings for lookback/fill
     gbm_lookback = LOOKBACK_WINDOW
@@ -183,19 +256,23 @@ def predict_symbol(
         gbm_lookback = mcfg["gbm_lookback"]
         fill_method = mcfg["fill_method"]
 
-    # 1. Load raw OHLCV
-    logger.info(f"Loading bars for {market}/{symbol}...")
-    raw_df = load_bars(market, symbol)
+    # 1. Load raw OHLCV (5m uses raw-generated resampled bars)
+    logger.info(f"Loading bars for {market}/{symbol} (timeframe={timeframe})...")
+    if timeframe == "5m":
+        from src.collector.resampler import load_resampled_bars
+        raw_df = load_resampled_bars(market, symbol)
+    else:
+        raw_df = load_bars(market, symbol)
     if raw_df.empty:
         raise FileNotFoundError(
-            f"No data found for {market}/{symbol}. Run collector first: "
+            f"No data found for {market}/{symbol} (timeframe={timeframe}). Run collector first: "
             f"./optionmeme collector --market {market} --symbol {symbol}"
         )
 
-    # 2. Extract early session (first 60 min)
-    early_df = extract_early_session(raw_df, market)
+    # 2. Extract session bars
+    early_df = extract_session(raw_df, market)
     if early_df.empty:
-        raise ValueError(f"No early session bars for {market}/{symbol}")
+        raise ValueError(f"No session bars for {market}/{symbol}")
 
     # 3. Filter by date
     early_df["date_str"] = early_df["date"].astype(str)
@@ -244,7 +321,8 @@ def predict_symbol(
 
     # 5. Load models and predict
     models = _load_models(market, model_type, feature_cols, target_df,
-                          label_config=label_config, model_config=model_config)
+                          label_config=label_config, model_config=model_config,
+                          timeframe=timeframe)
 
     # 6. Run predictions per model type
     results = {
@@ -314,6 +392,7 @@ def _load_models(
     target_df: pd.DataFrame,
     label_config: Optional[str] = None,
     model_config: Optional[str] = None,
+    timeframe: str = "1m",
 ) -> dict:
     """Load models and run predictions.
 
@@ -322,7 +401,7 @@ def _load_models(
         model_type='ensemble' returns {"Ensemble": {...}} only.
     """
     if label_config and model_config:
-        models_dir = DATA_DIR / "models" / label_config / model_config
+        models_dir = DATA_DIR / "models" / timeframe / label_config / model_config
     else:
         models_dir = DATA_DIR / "models"
     results = {}

@@ -126,7 +126,7 @@ class TestPredictAllHappyPath:
             trough_proba=np.full(n, 0.1),
             tmp_path=tmp_path,
         )
-        saved_path = tmp_path / "predictions" / "labeled" / "kr_predicted.parquet"
+        saved_path = tmp_path / "predictions" / "labeled" / "kr" / "kr_predicted.parquet"
         assert saved_path.exists()
 
     def test_parquet_roundtrip(self, featured_df, tmp_path):
@@ -137,7 +137,7 @@ class TestPredictAllHappyPath:
             trough_proba=np.full(n, 0.3),
             tmp_path=tmp_path,
         )
-        saved_path = tmp_path / "predictions" / "labeled" / "kr_predicted.parquet"
+        saved_path = tmp_path / "predictions" / "labeled" / "kr" / "kr_predicted.parquet"
         loaded = pd.read_parquet(saved_path)
         pd.testing.assert_frame_equal(result, loaded)
 
@@ -304,11 +304,11 @@ class TestRunBatchPredict:
             assert mock_predict.call_count == 2
             mock_predict.assert_any_call(
                 market="kr", model_type="gbm", threshold=0.5,
-                label_config=None, model_config=None,
+                label_config=None, model_config=None, timeframe="1m",
             )
             mock_predict.assert_any_call(
                 market="us", model_type="gbm", threshold=0.5,
-                label_config=None, model_config=None,
+                label_config=None, model_config=None, timeframe="1m",
             )
 
     def test_error_logged_not_raised(self):
@@ -327,7 +327,7 @@ class TestRunBatchPredict:
 
             mock_predict.assert_called_once_with(
                 market="kr", model_type="gbm", threshold=0.3,
-                label_config=None, model_config=None,
+                label_config=None, model_config=None, timeframe="1m",
             )
 
     def test_value_error_also_caught(self):
@@ -346,3 +346,80 @@ class TestRunBatchPredict:
             ]
             run_batch_predict(["kr", "us"], model_type="gbm", threshold=0.5)
             assert mock_predict.call_count == 2
+
+
+# ── Timeframe Parameter ────────────────────────────────────────
+
+
+class TestTimeframeParameter:
+    """Tests for predict_all timeframe parameter."""
+
+    def test_predict_all_accepts_timeframe(self, featured_df, tmp_path):
+        """predict_all should accept timeframe parameter without error."""
+        n = len(featured_df)
+        result = _run_predict_all(
+            featured_df,
+            peak_proba=np.full(n, 0.3),
+            trough_proba=np.full(n, 0.3),
+            tmp_path=tmp_path,
+        )
+        assert isinstance(result, pd.DataFrame)
+
+    def test_predict_all_timeframe_path_resolution(self, featured_df, tmp_path):
+        """When label_config and model_config are set, predictions saved partitioned."""
+        from src.inference.predict import predict_all
+
+        # Create featured parquet at timeframe-aware partitioned path (symbol/year)
+        sym = featured_df["symbol"].iloc[0]
+        year = pd.to_datetime(featured_df["datetime"].iloc[0]).year
+        featured_part_dir = tmp_path / "processed" / "featured" / "1m" / "L1" / "M1" / "kr" / sym
+        featured_part_dir.mkdir(parents=True, exist_ok=True)
+        featured_df[featured_df["symbol"] == sym].to_parquet(
+            featured_part_dir / f"{year}.parquet", index=False
+        )
+        sym2 = featured_df["symbol"].unique()[1] if featured_df["symbol"].nunique() > 1 else sym
+        if sym2 != sym:
+            featured_part_dir2 = tmp_path / "processed" / "featured" / "1m" / "L1" / "M1" / "kr" / sym2
+            featured_part_dir2.mkdir(parents=True, exist_ok=True)
+            featured_df[featured_df["symbol"] == sym2].to_parquet(
+                featured_part_dir2 / f"{year}.parquet", index=False
+            )
+
+        models_dir = tmp_path / "models" / "1m" / "L1" / "M1"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        (models_dir / "lgb_kr_peak.txt").touch()
+        (models_dir / "lgb_kr_trough.txt").touch()
+
+        # Mock models that handle variable-length input
+        def _make_dynamic_model(val=0.3):
+            m = MagicMock()
+            m.predict.side_effect = lambda X: np.full(len(X), val)
+            return m
+
+        peak_model = _make_dynamic_model(0.3)
+        trough_model = _make_dynamic_model(0.3)
+
+        pred_dir = tmp_path / "predictions" / "labeled"
+
+        with (
+            patch(f"{_MOD}.PROCESSED_DIR", tmp_path / "processed"),
+            patch("src.features.feature_pipeline.PROCESSED_DIR", tmp_path / "processed"),
+            patch(f"{_MOD}.DATA_DIR", tmp_path),
+            patch(f"{_MOD}.PREDICTIONS_DIR", pred_dir),
+            patch("src.model.train_gbm.load_model", side_effect=[peak_model, trough_model]),
+        ):
+            result = predict_all(
+                market="kr",
+                model_type="gbm",
+                threshold=0.5,
+                label_config="L1",
+                model_config="M1",
+                timeframe="1m",
+            )
+        assert isinstance(result, pd.DataFrame)
+        # Partitioned: result is last symbol's partition, but predictions saved for all
+        assert len(result) > 0
+        # Verify partitioned files exist
+        n_symbols = featured_df["symbol"].nunique()
+        pred_files = list((pred_dir / "gbm" / "1m" / "L1" / "M1" / "kr").rglob("*.parquet"))
+        assert len(pred_files) == n_symbols

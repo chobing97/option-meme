@@ -1,12 +1,13 @@
 """Unified feature engineering pipeline combining all feature modules."""
 
 import re
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 from loguru import logger
 
-from config.settings import LOOKBACK_WINDOW
+from config.settings import LOOKBACK_WINDOW, PROCESSED_DIR
 from src.features.price_features import compute_price_features
 from src.features.volume_features import compute_volume_features
 from src.features.technical_features import compute_technical_features
@@ -27,8 +28,9 @@ def build_features(
     df: pd.DataFrame,
     include_market: bool = False,
     market_df: Optional[pd.DataFrame] = None,
+    session_minutes: int = 390,
 ) -> pd.DataFrame:
-    """Run full feature pipeline on labeled early session data.
+    """Run full feature pipeline on labeled session data.
 
     Pipeline order:
     1. Price features
@@ -41,6 +43,7 @@ def build_features(
         df: Labeled DataFrame with OHLCV, 'date', 'minutes_from_open' columns.
         include_market: Whether to add market-level features.
         market_df: Index/ETF DataFrame for market features (required if include_market).
+        session_minutes: Total session duration in minutes (default 390).
 
     Returns:
         DataFrame with all feature columns added.
@@ -50,7 +53,7 @@ def build_features(
     result = compute_price_features(df)
     result = compute_volume_features(result)
     result = compute_technical_features(result)
-    result = compute_time_features(result)
+    result = compute_time_features(result, session_minutes=session_minutes)
 
     if include_market and market_df is not None:
         result = _add_market_features(result, market_df)
@@ -117,14 +120,8 @@ def build_lookback_features(
 
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
-    """Get list of feature column names from DataFrame."""
-    feature_cols = []
-    for col in df.columns:
-        for prefix in FEATURE_PREFIXES:
-            if col.startswith(prefix):
-                feature_cols.append(col)
-                break
-    return sorted(feature_cols)
+    """Get base feature columns only (excluding lag features)."""
+    return get_base_feature_columns(df)
 
 
 def get_all_feature_columns(df: pd.DataFrame) -> list[str]:
@@ -225,3 +222,201 @@ def _add_market_features(
     )
 
     return result
+
+
+# ── Partitioned I/O helpers ──────────────────────────────────────
+
+
+def _featured_dir() -> Path:
+    """Return the featured directory root, respecting any runtime patches on PROCESSED_DIR."""
+    return PROCESSED_DIR / "featured"
+
+
+def save_featured_partitioned(
+    df: pd.DataFrame,
+    market: str,
+    label_config: str,
+    model_config: str,
+    timeframe: str,
+    symbol: str,
+    year: int,
+) -> Path:
+    """Save featured DataFrame for a single symbol/year partition.
+
+    Target path::
+
+        FEATURED_DIR / timeframe / label_config / model_config / market / symbol / {year}.parquet
+
+    Returns:
+        The written file path.
+    """
+    out_dir = _featured_dir() / timeframe / label_config / model_config / market / symbol
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{year}.parquet"
+    df.to_parquet(out_path, index=False, compression="snappy")
+    logger.debug(f"Saved featured partition {out_path} ({len(df)} rows)")
+    return out_path
+
+
+def load_all_featured(
+    market: str,
+    label_config: str,
+    model_config: str,
+    timeframe: str = "1m",
+) -> pd.DataFrame:
+    """Load all featured partitions (symbol/year) into a single DataFrame.
+
+    Falls back to legacy single-file layout
+    (``{market}_featured.parquet``) if the partitioned directory is absent.
+    """
+    feat_root = _featured_dir()
+    base_dir = feat_root / timeframe / label_config / model_config / market
+    if base_dir.exists() and base_dir.is_dir():
+        files = sorted(base_dir.rglob("*.parquet"))
+        if files:
+            dfs = [pd.read_parquet(f) for f in files]
+            result = pd.concat(dfs, ignore_index=True)
+            logger.info(
+                f"Loaded {len(result)} featured rows from {len(files)} partitions "
+                f"({market} {label_config}/{model_config})"
+            )
+            return result
+
+    # Legacy single-file fallback
+    legacy = feat_root / timeframe / label_config / model_config / f"{market}_featured.parquet"
+    if legacy.exists():
+        df = pd.read_parquet(legacy)
+        logger.info(f"Loaded {len(df)} featured rows from legacy file {legacy}")
+        return df
+
+    logger.warning(f"No featured data found for {market} [{label_config}/{model_config}]")
+    return pd.DataFrame()
+
+
+def get_featured_partition_info(
+    market: str,
+    label_config: str,
+    model_config: str,
+    timeframe: str = "1m",
+) -> list[dict]:
+    """Get partition file info (path, symbol, num_rows) without loading data.
+
+    Uses Parquet metadata to read row counts, consuming negligible memory.
+
+    Returns:
+        List of dicts: [{"path": Path, "symbol": str, "num_rows": int}, ...]
+    """
+    import pyarrow.parquet as pq
+
+    base_dir = _featured_dir() / timeframe / label_config / model_config / market
+    if not base_dir.exists():
+        return []
+
+    infos = []
+    for sym_dir in sorted(base_dir.iterdir()):
+        if not sym_dir.is_dir():
+            continue
+        for f in sorted(sym_dir.glob("*.parquet")):
+            try:
+                num_rows = pq.read_metadata(f).num_rows
+                infos.append({"path": f, "symbol": sym_dir.name, "num_rows": num_rows})
+            except Exception as e:
+                logger.warning(f"Failed to read metadata for {f}: {e}")
+
+    return infos
+
+
+def build_incremental_chunks(
+    market: str,
+    label_config: str,
+    model_config: str,
+    timeframe: str = "1m",
+    memory_budget_ratio: float = 0.4,
+) -> list[list[dict]]:
+    """Build memory-safe chunks for incremental model training.
+
+    Uses greedy bin-packing: sort partitions by size (descending),
+    assign each to the smallest chunk.
+
+    Args:
+        market: Market key.
+        label_config: Label variant key.
+        model_config: Model variant key.
+        timeframe: Timeframe key.
+        memory_budget_ratio: Fraction of available memory to use per chunk.
+
+    Returns:
+        List of chunks, each chunk is a list of partition info dicts.
+    """
+    import psutil
+
+    infos = get_featured_partition_info(market, label_config, model_config, timeframe)
+    if not infos:
+        return []
+
+    total_rows = sum(p["num_rows"] for p in infos)
+
+    # Estimate bytes per row from first partition's column count
+    import pyarrow.parquet as pq
+    n_cols = pq.read_schema(infos[0]["path"]).names.__len__()
+    bytes_per_row = n_cols * 8  # float64
+
+    available_bytes = psutil.virtual_memory().available
+    budget_bytes = int(available_bytes * memory_budget_ratio)
+    max_rows_per_chunk = max(1, budget_bytes // bytes_per_row)
+
+    n_chunks = max(1, (total_rows + max_rows_per_chunk - 1) // max_rows_per_chunk)
+
+    logger.info(
+        f"Incremental chunking: {total_rows:,} rows, {n_cols} cols, "
+        f"~{bytes_per_row * total_rows / 1024**3:.1f}GB total, "
+        f"budget {budget_bytes / 1024**3:.1f}GB/chunk → {n_chunks} chunks"
+    )
+
+    if n_chunks == 1:
+        return [infos]
+
+    # Greedy bin-packing: sort by size desc, assign to smallest chunk
+    sorted_infos = sorted(infos, key=lambda x: x["num_rows"], reverse=True)
+    chunks: list[list[dict]] = [[] for _ in range(n_chunks)]
+    chunk_sizes = [0] * n_chunks
+
+    for info in sorted_infos:
+        min_idx = chunk_sizes.index(min(chunk_sizes))
+        chunks[min_idx].append(info)
+        chunk_sizes[min_idx] += info["num_rows"]
+
+    for i, (chunk, size) in enumerate(zip(chunks, chunk_sizes)):
+        n_symbols = len(set(p["symbol"] for p in chunk))
+        logger.debug(f"  Chunk {i}: {size:,} rows, {n_symbols} symbols")
+
+    return chunks
+
+
+def load_chunk(chunk: list[dict]) -> pd.DataFrame:
+    """Load a single chunk of partitions into a DataFrame.
+
+    Args:
+        chunk: List of partition info dicts from build_incremental_chunks.
+
+    Returns:
+        Combined DataFrame for this chunk.
+    """
+    dfs = [pd.read_parquet(p["path"]) for p in chunk]
+    if not dfs:
+        return pd.DataFrame()
+    result = pd.concat(dfs, ignore_index=True)
+    return result
+
+
+def list_featured_symbols(
+    market: str,
+    label_config: str,
+    model_config: str,
+    timeframe: str = "1m",
+) -> list[str]:
+    """Return sorted list of symbols that have featured data."""
+    base_dir = _featured_dir() / timeframe / label_config / model_config / market
+    if not base_dir.exists():
+        return []
+    return sorted(d.name for d in base_dir.iterdir() if d.is_dir())

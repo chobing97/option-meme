@@ -7,7 +7,7 @@ import pandas as pd
 from loguru import logger
 
 from src.collector.storage import load_bars
-from src.labeler.session_extractor import extract_early_session
+from src.labeler.session_extractor import extract_session
 from src.trading.datafeed.base import DataFeed
 
 
@@ -47,9 +47,9 @@ class HistoricalDataFeed(DataFeed):
                     f"No data for {self.market}/{self.symbol}. "
                     f"Run: ./optionmeme collector --market {self.market} --symbol {self.symbol}"
                 )
-            early_df = extract_early_session(raw_df, self.market)
+            early_df = extract_session(raw_df, self.market)
             if early_df.empty:
-                raise ValueError(f"No early session bars for {self.market}/{self.symbol}")
+                raise ValueError(f"No session bars for {self.market}/{self.symbol}")
 
         if "date_str" not in early_df.columns:
             early_df = early_df.copy()
@@ -114,9 +114,9 @@ class HistoricalDataFeed(DataFeed):
         if raw_df.empty:
             raise FileNotFoundError(f"No data for {market}/{symbol}")
 
-        early_df = extract_early_session(raw_df, market)
+        early_df = extract_session(raw_df, market)
         if early_df.empty:
-            raise ValueError(f"No early session bars for {market}/{symbol}")
+            raise ValueError(f"No session bars for {market}/{symbol}")
 
         early_df["date_str"] = early_df["date"].astype(str)
         dates = sorted(early_df["date_str"].unique())

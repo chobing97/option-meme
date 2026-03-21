@@ -89,14 +89,18 @@ def label_day(
     prominence_pct: float = PEAK_PROMINENCE_PCT,
     distance: int = PEAK_DISTANCE,
     width: int = PEAK_WIDTH,
+    shift: int = 1,
 ) -> DetectionResult:
-    """Label a single day's early session bars with peak/trough labels.
+    """Label a single day's session bars with peak/trough labels.
 
     Args:
         day_df: DataFrame for one day with 'close' and 'open' columns.
         prominence_pct: Minimum prominence as fraction of open price.
         distance: Minimum bars between peaks/troughs.
         width: Minimum width of peak/trough.
+        shift: Number of bars to shift labels forward.
+            shift=1: label on the next bar (confirmation-based, default).
+            shift=0: label on the peak/trough bar itself (immediate).
 
     Returns:
         DetectionResult with labels and detection metadata.
@@ -110,12 +114,14 @@ def label_day(
         prices, open_price, prominence_pct, distance, width,
     )
 
-    # Shift labels to the next bar (+1) — act on confirmation, not the peak/trough itself
-    shifted_peak = peak_idx + 1
-    shifted_trough = trough_idx + 1
-    # Boundary: drop detections at the last bar (shifted index would be out of range)
-    shifted_peak = shifted_peak[shifted_peak < n_bars]
-    shifted_trough = shifted_trough[shifted_trough < n_bars]
+    # Shift labels by the specified amount
+    shifted_peak = peak_idx + shift
+    shifted_trough = trough_idx + shift
+
+    # Boundary: drop detections where shifted index would be out of range
+    if shift > 0:
+        shifted_peak = shifted_peak[shifted_peak < n_bars]
+        shifted_trough = shifted_trough[shifted_trough < n_bars]
 
     # Build labels array
     labels = np.full(n_bars, LABEL_NEITHER, dtype=int)
@@ -130,12 +136,14 @@ def label_day(
         # Resolve by keeping the one with higher prominence
         for bar in conflict_bars:
             # Map shifted index back to original detection index
-            p_orig = bar - 1
-            t_orig = bar - 1
-            p_idx = np.where(peak_idx == p_orig)[0][0]
-            t_idx = np.where(trough_idx == t_orig)[0][0]
-            p_prom = peak_props["prominences"][p_idx]
-            t_prom = trough_props["prominences"][t_idx]
+            p_orig = bar - shift
+            t_orig = bar - shift
+            p_matches = np.where(peak_idx == p_orig)[0]
+            t_matches = np.where(trough_idx == t_orig)[0]
+            if len(p_matches) == 0 or len(t_matches) == 0:
+                continue  # 역매핑 불가 — 기존 라벨 유지
+            p_prom = peak_props["prominences"][p_matches[0]]
+            t_prom = trough_props["prominences"][t_matches[0]]
             labels[bar] = LABEL_PEAK if p_prom >= t_prom else LABEL_TROUGH
 
     return DetectionResult(

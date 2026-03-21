@@ -17,7 +17,7 @@ from dashboard.components.charts import (
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
     label_config_selector, market_selector, model_config_selector, model_type_selector,
-    reload_button, symbol_selector,
+    reload_button, symbol_selector, timeframe_selector,
 )
 from dashboard.data_loader import (
     find_configs_for_model_type, get_available_model_types, get_stock_name_map,
@@ -32,33 +32,38 @@ kb_dir = kb_nav_read()
 # ── Sidebar ───────────────────────────────────────────────
 
 reload_button()
+timeframe = timeframe_selector(key="timeframe")
 market = market_selector(key="pred_market")
-lc = label_config_selector(key="pred_lc")
-mc = model_config_selector(key="pred_mc")
 mt = model_type_selector(key="pred_mt")
 
-# Auto-switch L/M if selected model_type has no data for current config
-available_mt = get_available_model_types(market, lc, mc)
+# Pre-check: if current config has no data for selected model_type, auto-switch before widgets
+_cur_lc = st.session_state.get("pred_lc", "L1")
+_cur_mc = st.session_state.get("pred_mc", "M1")
+available_mt = get_available_model_types(market, _cur_lc, _cur_mc, timeframe)
 if mt not in available_mt:
-    valid_configs = find_configs_for_model_type(market, mt)
+    valid_configs = find_configs_for_model_type(market, mt, timeframe)
     if valid_configs:
-        best_lc, best_mc = valid_configs[0]
-        st.session_state["pred_lc"] = best_lc
-        st.session_state["pred_mc"] = best_mc
-        st.rerun()
-    else:
-        mt_display = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}.get(mt, mt)
-        st.warning(
-            f"No **{mt_display}** prediction data for **{market.upper()}**. "
-            f"Run: `./optionmeme batch_predict --market {market} --model {mt}`"
-        )
-        st.stop()
+        st.session_state["pred_lc"] = valid_configs[0][0]
+        st.session_state["pred_mc"] = valid_configs[0][1]
 
-pred_df = load_predicted(market, lc, mc, mt)
+lc = label_config_selector(key="pred_lc", timeframe=timeframe)
+mc = model_config_selector(key="pred_mc", timeframe=timeframe)
+
+# Verify data exists
+available_mt = get_available_model_types(market, lc, mc, timeframe)
+if mt not in available_mt:
+    mt_display = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}.get(mt, mt)
+    st.warning(
+        f"No **{mt_display}** prediction data for **{market.upper()}** [{timeframe}]. "
+        f"Run: `./optionmeme batch_predict --market {market} --model {mt}`"
+    )
+    st.stop()
+
+pred_df = load_predicted(market, lc, mc, mt, timeframe)
 
 if pred_df.empty:
     st.warning(
-        f"No prediction data for **{market.upper()}** ({mt.upper()}). "
+        f"No prediction data for **{market.upper()}** ({mt.upper()}) [{timeframe}]. "
         f"Run: `./optionmeme batch_predict --market {market} --model {mt}`"
     )
     st.stop()
@@ -88,7 +93,7 @@ stock_label = f"{symbol}({name_map[symbol]})" if symbol in name_map else symbol
 
 # ── Prediction distribution ──────────────────────────────
 
-st.subheader("Prediction Distribution")
+st.subheader(f"Prediction Distribution [{timeframe}]")
 label_counts = sym_pred["label"].value_counts().to_dict()
 
 cols = st.columns(4)
@@ -102,7 +107,7 @@ st.plotly_chart(make_label_distribution(label_counts), use_container_width=True)
 # ── Label vs Prediction ──────────────────────────────────
 
 mt_display = {"gbm": "GBM", "lstm": "LSTM", "ensemble": "Ensemble"}.get(mt, mt)
-st.subheader(f"Label vs Prediction ({mt_display}) — {stock_label}")
+st.subheader(f"Label vs Prediction ({mt_display}) [{timeframe}] — {stock_label}")
 
 dates = sorted(sym_pred["date"].unique()) if "date" in sym_pred.columns else []
 kb_nav_apply_date(kb_dir, dates, "pred_chart_date")
@@ -114,14 +119,14 @@ else:
     day_pred = sym_pred
 
 # Show which split the selected date belongs to
-split_dates = load_split_dates(market, lc, mc)
+split_dates = load_split_dates(market, lc, mc, timeframe)
 date_str = str(selected_date) if selected_date else ""
 split_name = next((s for s, ds in split_dates.items() if date_str in ds), None)
 if split_name:
     color = {"train": "blue", "val": "orange", "test": "red"}[split_name]
     st.markdown(f"Data split: :{color}[**{split_name.upper()}**]")
 
-label_df = load_labeled(market, lc)
+label_df = load_labeled(market, lc, symbol=symbol, timeframe=timeframe)
 if label_df.empty:
     st.info("No labeled data available for comparison.")
 else:

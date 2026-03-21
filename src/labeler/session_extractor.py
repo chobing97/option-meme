@@ -1,4 +1,4 @@
-"""Extract early regular session data (first 60 minutes) from raw bar data."""
+"""Extract regular session data from raw bar data."""
 
 from typing import Optional
 
@@ -7,12 +7,13 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import (
-    EARLY_SESSION_MINUTES,
-    KR_EARLY_END,
+    KR_MARKET_CLOSE,
     KR_MARKET_OPEN,
+    KR_SESSION_MINUTES,
     KR_TIMEZONE,
-    US_EARLY_END,
+    US_MARKET_CLOSE,
     US_MARKET_OPEN,
+    US_SESSION_MINUTES,
     US_TIMEZONE,
 )
 
@@ -21,18 +22,18 @@ KR_CALENDAR = "XKRX"  # Korea Exchange
 US_CALENDAR = "XNYS"  # NYSE (covers NASDAQ trading days too)
 
 
-def extract_early_session(
+def extract_session(
     df: pd.DataFrame,
     market: str,
 ) -> pd.DataFrame:
-    """Extract bars from the early regular session (first 60 minutes).
+    """Extract bars from the full regular session.
 
     Args:
         df: DataFrame with 'datetime' column and OHLCV data.
         market: 'kr' or 'us'
 
     Returns:
-        Filtered DataFrame with only early session bars, plus 'date' and
+        Filtered DataFrame with only regular session bars, plus 'date' and
         'minutes_from_open' columns.
     """
     if df.empty:
@@ -44,13 +45,11 @@ def extract_early_session(
     if market == "kr":
         tz = KR_TIMEZONE
         open_time = KR_MARKET_OPEN
-        end_time = KR_EARLY_END
-        cal_id = KR_CALENDAR
+        close_time = KR_MARKET_CLOSE
     elif market == "us":
         tz = US_TIMEZONE
         open_time = US_MARKET_OPEN
-        end_time = US_EARLY_END
-        cal_id = US_CALENDAR
+        close_time = US_MARKET_CLOSE
     else:
         raise ValueError(f"Unknown market: {market}")
 
@@ -64,30 +63,34 @@ def extract_early_session(
     df["_time"] = df["datetime"].dt.strftime("%H:%M")
     df["date"] = df["datetime"].dt.date
 
-    # Filter to early session window
-    mask = (df["_time"] >= open_time) & (df["_time"] < end_time)
-    early = df[mask].copy()
+    # Filter to full session window: open_time <= time < close_time
+    mask = (df["_time"] >= open_time) & (df["_time"] < close_time)
+    session = df[mask].copy()
 
-    if early.empty:
+    if session.empty:
         return pd.DataFrame()
 
     # Calculate minutes from market open
     open_h, open_m = map(int, open_time.split(":"))
-    early["minutes_from_open"] = (
-        early["datetime"].dt.hour * 60
-        + early["datetime"].dt.minute
+    session["minutes_from_open"] = (
+        session["datetime"].dt.hour * 60
+        + session["datetime"].dt.minute
         - (open_h * 60 + open_m)
     )
 
-    early = early.drop(columns=["_time"])
-    early = early.sort_values("datetime").reset_index(drop=True)
+    session = session.drop(columns=["_time"])
+    session = session.sort_values("datetime").reset_index(drop=True)
 
     logger.debug(
-        f"Extracted {len(early)} early session bars across "
-        f"{early['date'].nunique()} trading days"
+        f"Extracted {len(session)} session bars across "
+        f"{session['date'].nunique()} trading days"
     )
 
-    return early
+    return session
+
+
+# Backward-compatible alias
+extract_early_session = extract_session
 
 
 def get_trading_days(
@@ -135,18 +138,21 @@ def split_by_day(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 def validate_session_data(
     df: pd.DataFrame,
     market: str,
-    expected_bars: int = EARLY_SESSION_MINUTES,
+    expected_bars: Optional[int] = None,
 ) -> dict:
-    """Validate early session data quality.
+    """Validate session data quality.
 
     Args:
-        df: Output from extract_early_session
+        df: Output from extract_session
         market: 'kr' or 'us'
-        expected_bars: Expected bars per day (default: 60)
+        expected_bars: Expected bars per day. If None, uses session minutes
+            for the market (KR: 390, US: 390 for 1-minute bars).
 
     Returns:
         Validation report dict.
     """
+    if expected_bars is None:
+        expected_bars = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
     if df.empty:
         return {"valid": False, "error": "empty dataframe"}
 
