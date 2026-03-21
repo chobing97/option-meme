@@ -1263,6 +1263,291 @@ def run_trade(
 
 
 
+# ── Backtest ─────────────────────────────────────────
+
+
+def list_backtest_symbols(market: str = "us") -> list[str]:
+    """List symbols that have options data for backtesting."""
+    from config.settings import RAW_OPTIONS_DIR
+
+    options_dir = RAW_OPTIONS_DIR / market
+    if not options_dir.exists():
+        return []
+    return sorted(d.name for d in options_dir.iterdir() if d.is_dir())
+
+
+def _load_prediction_data(
+    market: str,
+    symbols: list[str],
+    timeframe: str,
+    label_config: str,
+    model_config: str,
+    model_type: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> pd.DataFrame:
+    """Load prediction data for selected symbols from partitioned parquet files.
+
+    Path: data/predictions/labeled/{model_type}/{timeframe}/{label_config}/{model_config}/{market}/{symbol}/*.parquet
+    """
+    pred_base = PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / market
+    all_dfs: list[pd.DataFrame] = []
+
+    for symbol in symbols:
+        symbol_dir = pred_base / symbol
+        if not symbol_dir.exists():
+            logger.warning(f"No prediction data for {symbol} at {symbol_dir}, skipping")
+            continue
+
+        parquet_files = sorted(symbol_dir.glob("*.parquet"))
+        if not parquet_files:
+            logger.warning(f"No parquet files for {symbol} at {symbol_dir}, skipping")
+            continue
+
+        for pf in parquet_files:
+            df = pd.read_parquet(pf)
+            df["symbol"] = symbol
+            all_dfs.append(df)
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    pred_df = pd.concat(all_dfs, ignore_index=True)
+    pred_df["datetime"] = pd.to_datetime(pred_df["datetime"])
+
+    # Filter by date range (strip tz for comparison)
+    if date_from or date_to:
+        dt_col = pred_df["datetime"]
+        if dt_col.dt.tz is not None:
+            dt_naive = dt_col.dt.tz_localize(None)
+        else:
+            dt_naive = dt_col
+        if date_from:
+            pred_df = pred_df[dt_naive >= pd.Timestamp(date_from)]
+            dt_naive = dt_naive[pred_df.index]
+        if date_to:
+            pred_df = pred_df[dt_naive <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+
+    return pred_df
+
+
+def run_backtest(
+    market: str,
+    symbols: list[str],
+    timeframe: str = "1m",
+    label_config: str = "L2",
+    model_config: str = "M3",
+    model_type: str = "gbm",
+    threshold: float = 0.3,
+    tp_pct: float = 0.10,
+    sl_pct: float = -0.05,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> None:
+    """Run backtest for specified symbols using historical options data."""
+    from config.settings import KR_SESSION_MINUTES, RAW_OPTIONS_DIR, US_SESSION_MINUTES
+    from src.backtest.analyzer import Analyzer
+    from src.backtest.engine import BacktestEngine
+    from src.backtest.executor.backtest import BacktestExecutor
+    from src.backtest.strategy import Strategy, StrategyConfig
+
+    # 1. Load prediction data
+    pred_df = _load_prediction_data(
+        market, symbols, timeframe, label_config, model_config, model_type,
+        date_from, date_to,
+    )
+    if pred_df.empty:
+        logger.error("No prediction data found. Run batch_predict first.")
+        return
+
+    # 2. Check which symbols have options data
+    symbols_with_options = []
+    for symbol in symbols:
+        options_dir = RAW_OPTIONS_DIR / market / symbol
+        if options_dir.exists() and any(options_dir.iterdir()):
+            symbols_with_options.append(symbol)
+        else:
+            logger.warning(f"No options data for {symbol}, skipping")
+
+    if not symbols_with_options:
+        logger.error("No symbols with options data found.")
+        return
+
+    # Filter pred_df to only symbols with options data
+    pred_df = pred_df[pred_df["symbol"].isin(symbols_with_options)]
+    if pred_df.empty:
+        logger.error("No prediction data for symbols with options data.")
+        return
+
+    # 3. Create StrategyConfig
+    config = StrategyConfig(
+        threshold=threshold,
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+    )
+
+    # 4. Create BacktestExecutor and load data
+    executor = BacktestExecutor(symbols=symbols_with_options, market=market)
+    executor.load_data()
+
+    # 5. Create BacktestEngine
+    strategy = Strategy(config)
+    engine = BacktestEngine(strategy, executor)
+
+    # 6. Run backtest
+    session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
+    result = engine.run(pred_df, market, session_minutes)
+
+    # 7. Compute metrics
+    analyzer = Analyzer()
+    metrics = analyzer.compute_metrics(result)
+
+    # 8. Print summary
+    date_min = pred_df["datetime"].min().strftime("%Y-%m-%d")
+    date_max = pred_df["datetime"].max().strftime("%Y-%m-%d")
+    symbols_str = ", ".join(symbols_with_options)
+
+    print(f"\n=== Backtest: {market} / {symbols_str} [{timeframe} {label_config}/{model_config}] ===")
+    print(f"Period: {date_min} ~ {date_max}")
+    print(f"Strategy: threshold={threshold}, TP={tp_pct:+.0%}, SL={sl_pct:+.0%}")
+    print()
+    print("Results:")
+    print(f"  Total Return:    {metrics['total_return']:+.1%}")
+    wins = len([t for t in result.trades if t.pnl > 0])
+    total = metrics["total_trades"]
+    print(f"  Win Rate:        {metrics['win_rate']:.1%} ({wins}/{total})")
+    pf = metrics["profit_factor"]
+    pf_str = f"{pf:.2f}" if pf != float("inf") else "inf"
+    print(f"  Profit Factor:   {pf_str}")
+    print(f"  Max Drawdown:    {metrics['max_drawdown_pct']:+.1%}")
+    print(f"  Sharpe Ratio:    {metrics['sharpe_ratio']:.2f}")
+    print(f"  Total Trades:    {total}")
+    print(f"  Avg Holding:     {metrics['avg_holding_minutes']:.0f} min")
+
+    # 9. Save result
+    results_dir = DATA_DIR / "backtest" / "results" / market / f"{label_config}_{model_config}" / model_type
+    results_dir.mkdir(parents=True, exist_ok=True)
+    result.save(results_dir)
+    print(f"\nSaved to: {results_dir}")
+
+
+def run_backtest_grid(
+    market: str,
+    symbols: list[str],
+    timeframe: str = "1m",
+    label_config: str = "L2",
+    model_config: str = "M3",
+    model_type: str = "gbm",
+    thresholds: list[float] | None = None,
+    tp_pcts: list[float] | None = None,
+    sl_pcts: list[float] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> None:
+    """Run backtest grid search over strategy parameter combinations."""
+    from config.settings import KR_SESSION_MINUTES, RAW_OPTIONS_DIR, US_SESSION_MINUTES
+    from src.backtest.analyzer import Analyzer
+    from src.backtest.engine import BacktestEngine
+    from src.backtest.executor.backtest import BacktestExecutor
+    from src.backtest.strategy import Strategy, StrategyConfig
+
+    if thresholds is None:
+        thresholds = [0.2, 0.3, 0.4]
+    if tp_pcts is None:
+        tp_pcts = [0.05, 0.10, 0.15]
+    if sl_pcts is None:
+        sl_pcts = [-0.03, -0.05, -0.10]
+
+    # 1. Load prediction data
+    pred_df = _load_prediction_data(
+        market, symbols, timeframe, label_config, model_config, model_type,
+        date_from, date_to,
+    )
+    if pred_df.empty:
+        logger.error("No prediction data found. Run batch_predict first.")
+        return
+
+    # Check which symbols have options data
+    symbols_with_options = []
+    for symbol in symbols:
+        options_dir = RAW_OPTIONS_DIR / market / symbol
+        if options_dir.exists() and any(options_dir.iterdir()):
+            symbols_with_options.append(symbol)
+        else:
+            logger.warning(f"No options data for {symbol}, skipping")
+
+    if not symbols_with_options:
+        logger.error("No symbols with options data found.")
+        return
+
+    pred_df = pred_df[pred_df["symbol"].isin(symbols_with_options)]
+    if pred_df.empty:
+        logger.error("No prediction data for symbols with options data.")
+        return
+
+    # 2. Generate configs
+    configs = []
+    for thr in thresholds:
+        for tp in tp_pcts:
+            for sl in sl_pcts:
+                configs.append(StrategyConfig(threshold=thr, tp_pct=tp, sl_pct=sl))
+
+    n_combos = len(configs)
+    symbols_str = ", ".join(symbols_with_options)
+    print(f"\n=== Backtest Grid: {market} / {symbols_str} [{timeframe} {label_config}/{model_config}] ===")
+    print(f"{n_combos} combinations to test\n")
+
+    # 3. Create executor and engine
+    executor = BacktestExecutor(symbols=symbols_with_options, market=market)
+    executor.load_data()
+
+    strategy = Strategy(configs[0])
+    engine = BacktestEngine(strategy, executor)
+
+    # 4. Run grid
+    session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
+    results = engine.run_grid(pred_df, market, configs, session_minutes)
+
+    # 5. Compare results
+    analyzer = Analyzer()
+    comparison_df = analyzer.compare(results)
+
+    # 6. Print comparison table
+    if not comparison_df.empty:
+        # Format for display
+        fmt_df = comparison_df.copy()
+        fmt_df["return"] = fmt_df["total_return"].apply(lambda x: f"{x:+.1%}")
+        fmt_df["win_rate"] = fmt_df["win_rate"].apply(lambda x: f"{x:.1%}")
+        fmt_df["mdd"] = fmt_df["max_drawdown_pct"].apply(lambda x: f"{x:+.1%}")
+        fmt_df["sharpe"] = fmt_df["sharpe_ratio"].apply(lambda x: f"{x:.2f}")
+        fmt_df["pf"] = fmt_df["profit_factor"].apply(
+            lambda x: f"{x:.2f}" if x != float("inf") else "inf"
+        )
+        fmt_df["trades"] = fmt_df["total_trades"].astype(int)
+
+        display_cols = ["threshold", "tp_pct", "sl_pct", "return", "win_rate", "mdd", "sharpe", "pf", "trades"]
+        print(fmt_df[display_cols].to_string(index=False))
+
+        # Best by return
+        best = comparison_df.iloc[0]
+        print(
+            f"\nBest by return: threshold={best['threshold']}, "
+            f"tp={best['tp_pct']}, sl={best['sl_pct']} "
+            f"-> {best['total_return']:+.1%}"
+        )
+
+    # 7. Save grid results
+    results_dir = DATA_DIR / "backtest" / "grid" / market / f"{label_config}_{model_config}" / model_type
+    results_dir.mkdir(parents=True, exist_ok=True)
+    if not comparison_df.empty:
+        comparison_df.to_parquet(results_dir / "grid_results.parquet", index=False)
+        comparison_df.to_csv(results_dir / "grid_results.csv", index=False)
+    # Save best result
+    if results:
+        results[0].save(results_dir / "best")
+    print(f"\nSaved to: {results_dir}")
+
+
 # ── CLI ──────────────────────────────────────────────────
 
 
@@ -1275,6 +1560,8 @@ STAGES = {
     "predict": "Inference on latest data",
     "batch_predict": "Batch prediction (all symbols → labeled parquet)",
     "trade": "Mock trading simulation",
+    "backtest": "Options backtest with historical OHLCV",
+    "backtest_grid": "Grid search over backtest strategy parameters",
     "all": "Full pipeline (collector → labeler → features → model)",
 }
 
@@ -1307,6 +1594,11 @@ examples:
   ./optionmeme batch_predict --label-config all --model-config all
   ./optionmeme all --timeframe 5m                  5-minute pipeline
   ./optionmeme labeler --timeframe 5m --label-config L1
+  ./optionmeme backtest --market us --symbol AAPL --threshold 0.3
+  ./optionmeme backtest --market us --symbol AAPL SPY --tp 0.15 --sl -0.03
+  ./optionmeme backtest --list-symbols --market us
+  ./optionmeme backtest_grid --market us --symbol AAPL
+  ./optionmeme backtest_grid --market us --symbol AAPL --threshold-grid 0.2,0.3 --tp-grid 0.05,0.10
 """,
     )
 
@@ -1401,6 +1693,44 @@ examples:
         choices=_all_model_keys + ["all"],
         default="all",
         help="Model configuration variant (default: all)",
+    )
+
+    # ── Backtest arguments ──────────────────────────────
+    parser.add_argument(
+        "--tp",
+        type=float,
+        default=0.10,
+        help="Take profit percentage (backtest, default: 0.10)",
+    )
+    parser.add_argument(
+        "--sl",
+        type=float,
+        default=-0.05,
+        help="Stop loss percentage (backtest, default: -0.05)",
+    )
+    parser.add_argument(
+        "--list-symbols",
+        action="store_true",
+        help="List symbols with options data (backtest only)",
+    )
+    # Grid search arguments
+    parser.add_argument(
+        "--threshold-grid",
+        type=str,
+        default="0.2,0.3,0.4",
+        help="Comma-separated thresholds for grid search (backtest_grid, default: 0.2,0.3,0.4)",
+    )
+    parser.add_argument(
+        "--tp-grid",
+        type=str,
+        default="0.05,0.10,0.15",
+        help="Comma-separated TP values for grid search (backtest_grid, default: 0.05,0.10,0.15)",
+    )
+    parser.add_argument(
+        "--sl-grid",
+        type=str,
+        default="-0.03,-0.05,-0.10",
+        help="Comma-separated SL values for grid search (backtest_grid, default: -0.03,-0.05,-0.10)",
     )
 
     return parser
@@ -1501,6 +1831,58 @@ def main() -> None:
                 label_config=label_config,
                 model_config=model_config,
                 timeframe=timeframe,
+            )
+
+        if stage == "backtest":
+            if args.list_symbols:
+                bt_market = args.market if args.market != "all" else "us"
+                symbols = list_backtest_symbols(bt_market)
+                print(f"Symbols with options data ({bt_market}): {', '.join(symbols)}")
+                return
+            if not args.symbol:
+                parser.error("backtest requires --symbol")
+            if args.market == "all":
+                parser.error("backtest requires a specific --market (kr or us)")
+            model_type = args.model_type if args.model_type != "all" else "gbm"
+            label_config = args.label_config if args.label_config != "all" else "L2"
+            model_config = args.model_config if args.model_config != "all" else "M3"
+            run_backtest(
+                market=args.market,
+                symbols=args.symbol,
+                timeframe=timeframe,
+                label_config=label_config,
+                model_config=model_config,
+                model_type=model_type,
+                threshold=args.threshold,
+                tp_pct=args.tp,
+                sl_pct=args.sl,
+                date_from=args.date_from,
+                date_to=args.date_to,
+            )
+
+        if stage == "backtest_grid":
+            if not args.symbol:
+                parser.error("backtest_grid requires --symbol")
+            if args.market == "all":
+                parser.error("backtest_grid requires a specific --market (kr or us)")
+            model_type = args.model_type if args.model_type != "all" else "gbm"
+            label_config = args.label_config if args.label_config != "all" else "L2"
+            model_config = args.model_config if args.model_config != "all" else "M3"
+            thresholds = [float(x) for x in args.threshold_grid.split(",")]
+            tp_pcts = [float(x) for x in args.tp_grid.split(",")]
+            sl_pcts = [float(x) for x in args.sl_grid.split(",")]
+            run_backtest_grid(
+                market=args.market,
+                symbols=args.symbol,
+                timeframe=timeframe,
+                label_config=label_config,
+                model_config=model_config,
+                model_type=model_type,
+                thresholds=thresholds,
+                tp_pcts=tp_pcts,
+                sl_pcts=sl_pcts,
+                date_from=args.date_from,
+                date_to=args.date_to,
             )
 
     except KeyboardInterrupt:

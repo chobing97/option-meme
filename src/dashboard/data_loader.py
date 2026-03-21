@@ -653,8 +653,8 @@ def get_backtest_files() -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def get_backtest_symbols(name: str) -> list[str]:
-    """Return sorted symbol list from a backtest file."""
+def get_backtest_file_symbols(name: str) -> list[str]:
+    """Return sorted symbol list from a backtest file (old backtest system)."""
     path = BACKTEST_DIR / f"{name}.parquet"
     if not path.exists():
         return []
@@ -911,3 +911,66 @@ def get_model_status(market: str, label_config: str, model_config: str, timefram
             path = _model_path(market, label_config, model_config, mtype, target, timeframe)
             models[f"{mtype}_{target}"] = path.exists()
     return models
+
+
+# ── New backtest system helpers ──────────────────────────
+
+
+@st.cache_data(show_spinner=False)
+def get_backtest_symbols(market: str = "us") -> list[str]:
+    """List symbols that have options data for backtesting."""
+    options_dir = RAW_OPTIONS_DIR / market
+    if not options_dir.exists():
+        return []
+    return sorted(d.name for d in options_dir.iterdir() if d.is_dir())
+
+
+@st.cache_data(show_spinner="Loading prediction data...")
+def load_prediction_for_backtest(
+    market: str, symbol: str, timeframe: str, label_config: str,
+    model_config: str, model_type: str = "gbm",
+) -> pd.DataFrame:
+    """Load prediction data for a single symbol for backtesting."""
+    pred_dir = PREDICTIONS_DIR / model_type / timeframe / label_config / model_config / market / symbol
+    if not pred_dir.exists():
+        return pd.DataFrame()
+    files = sorted(pred_dir.glob("*.parquet"))
+    if not files:
+        return pd.DataFrame()
+    dfs = [pd.read_parquet(f) for f in files]
+    result = pd.concat(dfs, ignore_index=True)
+    result["symbol"] = symbol
+    return result
+
+
+def run_dashboard_backtest(
+    market: str, symbol: str, pred_df: pd.DataFrame,
+    threshold: float, tp_pct: float, sl_pct: float,
+    session_minutes: int = 390,
+) -> dict:
+    """Run backtest and return analyzer results for dashboard display.
+
+    Returns dict with keys: "result" (SimulationResult), "metrics" (dict),
+    "trades_df" (DataFrame), "equity_df" (DataFrame)
+    """
+    from src.backtest.analyzer import Analyzer
+    from src.backtest.engine import BacktestEngine
+    from src.backtest.executor.backtest import BacktestExecutor
+    from src.backtest.strategy import Strategy, StrategyConfig
+
+    config = StrategyConfig(threshold=threshold, tp_pct=tp_pct, sl_pct=sl_pct)
+    executor = BacktestExecutor(symbols=[symbol], market=market)
+    executor.load_data()
+    engine = BacktestEngine(Strategy(config), executor)
+    result = engine.run(pred_df, market, session_minutes)
+
+    analyzer = Analyzer()
+    metrics = analyzer.compute_metrics(result)
+    dfs = analyzer.to_dataframes(result)
+
+    return {
+        "result": result,
+        "metrics": metrics,
+        "trades_df": dfs["trades"],
+        "equity_df": dfs["equity"],
+    }
