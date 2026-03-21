@@ -1343,13 +1343,17 @@ def run_backtest(
     sl_pct: float = -0.05,
     date_from: str | None = None,
     date_to: str | None = None,
+    strategy_name: str = "put_buy",
+    strategy_kwargs: dict | None = None,
 ) -> None:
     """Run backtest for specified symbols using historical options data."""
+    if strategy_kwargs is None:
+        strategy_kwargs = {}
     from config.settings import KR_SESSION_MINUTES, RAW_OPTIONS_DIR, US_SESSION_MINUTES
     from src.backtest.analyzer import Analyzer
     from src.backtest.engine import BacktestEngine
     from src.backtest.executor.backtest import BacktestExecutor
-    from src.backtest.strategy import Strategy, StrategyConfig
+    from src.backtest.strategy import create_strategy
 
     # 1. Load prediction data
     pred_df = _load_prediction_data(
@@ -1379,11 +1383,13 @@ def run_backtest(
         logger.error("No prediction data for symbols with options data.")
         return
 
-    # 3. Create StrategyConfig
-    config = StrategyConfig(
+    # 3. Create strategy
+    strategy = create_strategy(
+        strategy_name,
         threshold=threshold,
         tp_pct=tp_pct,
         sl_pct=sl_pct,
+        **strategy_kwargs,
     )
 
     # 4. Create BacktestExecutor and load data
@@ -1391,7 +1397,6 @@ def run_backtest(
     executor.load_data()
 
     # 5. Create BacktestEngine
-    strategy = Strategy(config)
     engine = BacktestEngine(strategy, executor)
 
     # 6. Run backtest
@@ -1409,7 +1414,7 @@ def run_backtest(
 
     print(f"\n=== Backtest: {market} / {symbols_str} [{timeframe} {label_config}/{model_config}] ===")
     print(f"Period: {date_min} ~ {date_max}")
-    print(f"Strategy: threshold={threshold}, TP={tp_pct:+.0%}, SL={sl_pct:+.0%}")
+    print(f"Strategy: {strategy_name}, threshold={threshold}, TP={tp_pct:+.0%}, SL={sl_pct:+.0%}")
     print()
     print("Results:")
     print(f"  Total Return:    {metrics['total_return']:+.1%}")
@@ -1443,13 +1448,17 @@ def run_backtest_grid(
     sl_pcts: list[float] | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    strategy_name: str = "put_buy",
+    strategy_kwargs: dict | None = None,
 ) -> None:
     """Run backtest grid search over strategy parameter combinations."""
+    if strategy_kwargs is None:
+        strategy_kwargs = {}
     from config.settings import KR_SESSION_MINUTES, RAW_OPTIONS_DIR, US_SESSION_MINUTES
     from src.backtest.analyzer import Analyzer
     from src.backtest.engine import BacktestEngine
     from src.backtest.executor.backtest import BacktestExecutor
-    from src.backtest.strategy import Strategy, StrategyConfig
+    from src.backtest.strategy import create_strategy
 
     if thresholds is None:
         thresholds = [0.2, 0.3, 0.4]
@@ -1485,28 +1494,29 @@ def run_backtest_grid(
         logger.error("No prediction data for symbols with options data.")
         return
 
-    # 2. Generate configs
-    configs = []
+    # 2. Generate strategies
+    strategies = []
     for thr in thresholds:
         for tp in tp_pcts:
             for sl in sl_pcts:
-                configs.append(StrategyConfig(threshold=thr, tp_pct=tp, sl_pct=sl))
+                strategies.append(create_strategy(
+                    strategy_name, threshold=thr, tp_pct=tp, sl_pct=sl, **strategy_kwargs,
+                ))
 
-    n_combos = len(configs)
+    n_combos = len(strategies)
     symbols_str = ", ".join(symbols_with_options)
     print(f"\n=== Backtest Grid: {market} / {symbols_str} [{timeframe} {label_config}/{model_config}] ===")
-    print(f"{n_combos} combinations to test\n")
+    print(f"Strategy: {strategy_name}, {n_combos} combinations to test\n")
 
     # 3. Create executor and engine
     executor = BacktestExecutor(symbols=symbols_with_options, market=market)
     executor.load_data()
 
-    strategy = Strategy(configs[0])
-    engine = BacktestEngine(strategy, executor)
+    engine = BacktestEngine(strategies[0], executor)
 
     # 4. Run grid
     session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
-    results = engine.run_grid(pred_df, market, configs, session_minutes)
+    results = engine.run_grid(pred_df, market, strategies, session_minutes)
 
     # 5. Compare results
     analyzer = Analyzer()
@@ -1697,6 +1707,36 @@ examples:
 
     # ── Backtest arguments ──────────────────────────────
     parser.add_argument(
+        "--strategy",
+        choices=["put_buy", "filtered_put", "call_buy"],
+        default="put_buy",
+        help="Trading strategy for backtest (default: put_buy)",
+    )
+    parser.add_argument(
+        "--min-holding",
+        type=int,
+        default=30,
+        help="Minimum holding time in minutes (filtered_put/call_buy, default: 30)",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=30,
+        help="Cooldown minutes after sell (filtered_put/call_buy, default: 30)",
+    )
+    parser.add_argument(
+        "--max-trades",
+        type=int,
+        default=3,
+        help="Maximum trades per day (filtered_put/call_buy, default: 3)",
+    )
+    parser.add_argument(
+        "--min-prob-gap",
+        type=float,
+        default=0.2,
+        help="Minimum peak-trough prob gap for entry (filtered_put, default: 0.2)",
+    )
+    parser.add_argument(
         "--tp",
         type=float,
         default=0.10,
@@ -1731,6 +1771,24 @@ examples:
         type=str,
         default="-0.03,-0.05,-0.10",
         help="Comma-separated SL values for grid search (backtest_grid, default: -0.03,-0.05,-0.10)",
+    )
+    parser.add_argument(
+        "--min-holding-grid",
+        type=str,
+        default="15,30,60",
+        help="Comma-separated min holding values for grid search (filtered_put/call_buy, default: 15,30,60)",
+    )
+    parser.add_argument(
+        "--cooldown-grid",
+        type=str,
+        default="15,30,60",
+        help="Comma-separated cooldown values for grid search (filtered_put/call_buy, default: 15,30,60)",
+    )
+    parser.add_argument(
+        "--max-trades-grid",
+        type=str,
+        default="1,2,3,5",
+        help="Comma-separated max trades values for grid search (filtered_put/call_buy, default: 1,2,3,5)",
     )
 
     return parser
@@ -1846,6 +1904,15 @@ def main() -> None:
             model_type = args.model_type if args.model_type != "all" else "gbm"
             label_config = args.label_config if args.label_config != "all" else "L2"
             model_config = args.model_config if args.model_config != "all" else "M3"
+            # Build strategy kwargs for filtered_put/call_buy
+            _strategy_kwargs = {}
+            if args.strategy in ("filtered_put", "call_buy"):
+                _strategy_kwargs["min_holding_minutes"] = args.min_holding
+                _strategy_kwargs["cooldown_minutes"] = args.cooldown
+                _strategy_kwargs["max_trades_per_day"] = args.max_trades
+            if args.strategy == "filtered_put":
+                _strategy_kwargs["min_prob_gap"] = args.min_prob_gap
+
             run_backtest(
                 market=args.market,
                 symbols=args.symbol,
@@ -1858,6 +1925,8 @@ def main() -> None:
                 sl_pct=args.sl,
                 date_from=args.date_from,
                 date_to=args.date_to,
+                strategy_name=args.strategy,
+                strategy_kwargs=_strategy_kwargs,
             )
 
         if stage == "backtest_grid":
@@ -1871,6 +1940,16 @@ def main() -> None:
             thresholds = [float(x) for x in args.threshold_grid.split(",")]
             tp_pcts = [float(x) for x in args.tp_grid.split(",")]
             sl_pcts = [float(x) for x in args.sl_grid.split(",")]
+
+            # Build strategy kwargs for filtered_put/call_buy
+            _strategy_kwargs = {}
+            if args.strategy in ("filtered_put", "call_buy"):
+                _strategy_kwargs["min_holding_minutes"] = args.min_holding
+                _strategy_kwargs["cooldown_minutes"] = args.cooldown
+                _strategy_kwargs["max_trades_per_day"] = args.max_trades
+            if args.strategy == "filtered_put":
+                _strategy_kwargs["min_prob_gap"] = args.min_prob_gap
+
             run_backtest_grid(
                 market=args.market,
                 symbols=args.symbol,
@@ -1883,6 +1962,8 @@ def main() -> None:
                 sl_pcts=sl_pcts,
                 date_from=args.date_from,
                 date_to=args.date_to,
+                strategy_name=args.strategy,
+                strategy_kwargs=_strategy_kwargs,
             )
 
     except KeyboardInterrupt:

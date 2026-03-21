@@ -1,4 +1,4 @@
-"""Tests for BacktestEngine — 13 test cases using MockExecutor."""
+"""Tests for BacktestEngine — 16 test cases using MockExecutor."""
 
 import pytest
 import pandas as pd
@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from src.backtest.engine import BacktestEngine
-from src.backtest.strategy import Strategy, StrategyConfig
+from src.backtest.strategy import PutBuyStrategy as Strategy, PutBuyConfig as StrategyConfig
+from src.backtest.strategy import FilteredPutStrategy, FilteredPutConfig, CallBuyStrategy, CallBuyConfig
 from src.backtest.executor.base import (
     Executor, OptionContract, Position, FillResult,
 )
@@ -359,11 +360,11 @@ class TestBacktestEngine:
         ]
         df = _make_pred_df(bars)
 
-        configs = [
-            StrategyConfig(threshold=0.3),
-            StrategyConfig(threshold=0.6),  # too high -> no trades
+        strategies = [
+            Strategy(StrategyConfig(threshold=0.3)),
+            Strategy(StrategyConfig(threshold=0.6)),  # too high -> no trades
         ]
-        results = engine.run_grid(df, "us", configs)
+        results = engine.run_grid(df, "us", strategies)
 
         assert len(results) == 2
         assert len(results[0].trades) == 1  # threshold=0.3 triggers
@@ -381,3 +382,66 @@ class TestBacktestEngine:
         assert len(result.trades) == 0
         assert len(result.snapshots) == 0
         assert result.metadata["total_bars"] == 0
+
+    # 14. FilteredPut engine run
+    def test_filtered_put_engine_run(self):
+        executor = MockExecutor()
+        executor._chains["AAPL"] = _make_chain("AAPL")
+        config = FilteredPutConfig(threshold=0.3, min_prob_gap=0.2, min_holding_minutes=0)
+        strategy = FilteredPutStrategy(config)
+        engine = BacktestEngine(strategy, executor)
+
+        bars = [
+            {"peak_prob": 0.6, "trough_prob": 0.1, "close": 150.0, "minutes_from_open": 0},  # BUY
+            _neutral_bar(minutes_from_open=1),
+            {"peak_prob": 0.1, "trough_prob": 0.6, "close": 148.0, "minutes_from_open": 2},  # SELL
+        ]
+        df = _make_pred_df(bars)
+        result = engine.run(df, market="us")
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "TROUGH_SIGNAL"
+
+    # 15. CallBuy engine run
+    def test_call_buy_engine_run(self):
+        executor = MockExecutor()
+        executor._chains["AAPL"] = [
+            OptionContract(symbol="AAPL", strike=150.0, expiry=datetime(2026, 3, 28), option_type="call"),
+        ]
+        config = CallBuyConfig(threshold=0.3, min_holding_minutes=0)
+        strategy = CallBuyStrategy(config)
+        engine = BacktestEngine(strategy, executor)
+
+        bars = [
+            {"peak_prob": 0.1, "trough_prob": 0.6, "close": 150.0, "minutes_from_open": 0},  # BUY (trough)
+            _neutral_bar(minutes_from_open=1),
+            {"peak_prob": 0.6, "trough_prob": 0.1, "close": 152.0, "minutes_from_open": 2},  # SELL (peak)
+        ]
+        df = _make_pred_df(bars)
+        result = engine.run(df, market="us")
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "PEAK_SIGNAL"
+
+    # 16. on_day_start is called on day boundary
+    def test_on_day_start_called_on_day_boundary(self):
+        executor = MockExecutor()
+        executor._chains["AAPL"] = _make_chain("AAPL")
+        config = FilteredPutConfig(threshold=0.3, max_trades_per_day=1, min_prob_gap=0.2, min_holding_minutes=0)
+        strategy = FilteredPutStrategy(config)
+        engine = BacktestEngine(strategy, executor)
+
+        day1 = datetime(2026, 3, 20, 9, 30)
+        day2 = datetime(2026, 3, 21, 9, 30)
+
+        rows = [
+            # Day 1: buy + sell (uses 1 trade)
+            {"datetime": day1, "symbol": "AAPL", "close": 150.0, "peak_prob": 0.6, "trough_prob": 0.1, "minutes_from_open": 0},
+            {"datetime": day1 + timedelta(minutes=5), "symbol": "AAPL", "close": 148.0, "peak_prob": 0.1, "trough_prob": 0.6, "minutes_from_open": 5},
+            # Day 2: should be able to trade again (daily counter reset)
+            {"datetime": day2, "symbol": "AAPL", "close": 150.0, "peak_prob": 0.6, "trough_prob": 0.1, "minutes_from_open": 0},
+            {"datetime": day2 + timedelta(minutes=5), "symbol": "AAPL", "close": 148.0, "peak_prob": 0.1, "trough_prob": 0.6, "minutes_from_open": 5},
+        ]
+        df = pd.DataFrame(rows)
+        result = engine.run(df, market="us")
+
+        # Should have trades on both days (day counter resets via on_day_start)
+        assert len(result.trades) >= 2

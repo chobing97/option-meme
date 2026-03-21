@@ -956,12 +956,12 @@ def run_dashboard_backtest(
     from src.backtest.analyzer import Analyzer
     from src.backtest.engine import BacktestEngine
     from src.backtest.executor.backtest import BacktestExecutor
-    from src.backtest.strategy import Strategy, StrategyConfig
+    from src.backtest.strategy import PutBuyStrategy, PutBuyConfig
 
-    config = StrategyConfig(threshold=threshold, tp_pct=tp_pct, sl_pct=sl_pct)
+    config = PutBuyConfig(threshold=threshold, tp_pct=tp_pct, sl_pct=sl_pct)
     executor = BacktestExecutor(symbols=[symbol], market=market)
     executor.load_data()
-    engine = BacktestEngine(Strategy(config), executor)
+    engine = BacktestEngine(PutBuyStrategy(config), executor)
     result = engine.run(pred_df, market, session_minutes)
 
     analyzer = Analyzer()

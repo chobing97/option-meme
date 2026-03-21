@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime
 
-from src.backtest.strategy import StrategyConfig
+from src.backtest.strategy import PutBuyConfig as StrategyConfig
 from src.backtest.executor.base import OptionContract, Position
 
 

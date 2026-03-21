@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime
 
 from src.backtest.result import Trade, BarSnapshot, SimulationResult
-from src.backtest.strategy import StrategyConfig
+from src.backtest.strategy import PutBuyConfig as StrategyConfig
 
 
 class TestTrade:

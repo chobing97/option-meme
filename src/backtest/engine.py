@@ -7,14 +7,14 @@ from datetime import datetime
 from typing import Optional
 
 from src.backtest.result import Trade, BarSnapshot, SimulationResult
-from src.backtest.strategy import Strategy, StrategyConfig, Action
+from src.backtest.strategy.base import BaseStrategy, Action
 from src.backtest.executor.base import Executor, Position
 
 
 class BacktestEngine:
     """Connects Strategy + Executor, runs the backtest loop."""
 
-    def __init__(self, strategy: Strategy, executor: Executor):
+    def __init__(self, strategy: BaseStrategy, executor: Executor):
         self.strategy = strategy
         self.executor = executor
 
@@ -35,7 +35,7 @@ class BacktestEngine:
             return SimulationResult(
                 trades=[],
                 snapshots=[],
-                config=self.strategy.config,
+                config=self.strategy.config_dict(),
                 metadata={"market": market, "symbols": [], "date_range": "", "timeframe": "1m", "total_bars": 0},
             )
 
@@ -73,6 +73,8 @@ class BacktestEngine:
                     trades, prev_date, snapshots, equity_high,
                 )
                 equity_high = max(equity_high, self._current_equity())
+                self.strategy.reset()
+                self.strategy.on_day_start(str(current_date))
 
             prev_date = current_date
 
@@ -101,11 +103,12 @@ class BacktestEngine:
             reason_str = ""
 
             if action_result.action == Action.BUY and symbol not in open_trades:
-                chain = self.executor.get_option_chain(symbol, self.strategy.config.option_type, ts)
+                _cfg = self.strategy.config_dict()
+                chain = self.executor.get_option_chain(symbol, _cfg.get("option_type", "put"), ts)
                 if chain:
                     # ATM selection
                     atm = min(chain, key=lambda c: abs(c.strike - close))
-                    fill = self.executor.execute_buy(atm, self.strategy.config.quantity, ts)
+                    fill = self.executor.execute_buy(atm, _cfg.get("quantity", 1), ts)
                     if fill.status == "FILLED":
                         trade_id_counter += 1
                         t = Trade(
@@ -116,7 +119,7 @@ class BacktestEngine:
                             entry_strike=atm.strike,
                             entry_expiry=atm.expiry,
                             entry_underlying=close,
-                            quantity=self.strategy.config.quantity,
+                            quantity=_cfg.get("quantity", 1),
                         )
                         open_trades[symbol] = t
                         entry_bar_counts[symbol] = bar_counts[symbol]
@@ -192,7 +195,7 @@ class BacktestEngine:
         return SimulationResult(
             trades=trades,
             snapshots=snapshots,
-            config=self.strategy.config,
+            config=self.strategy.config_dict(),
             metadata=metadata,
         )
 
@@ -201,13 +204,13 @@ class BacktestEngine:
         self,
         pred_df: pd.DataFrame,
         market: str,
-        configs: list[StrategyConfig],
+        strategies: list[BaseStrategy],
         session_minutes: int = 390,
     ) -> list[SimulationResult]:
-        """Run backtest for each config. Reset executor between runs."""
+        """Run backtest for each strategy. Reset executor between runs."""
         results = []
-        for config in configs:
-            self.strategy = Strategy(config)
+        for strategy in strategies:
+            self.strategy = strategy
             self.executor.reset()
             result = self.run(pred_df, market, session_minutes)
             results.append(result)

@@ -131,10 +131,11 @@ class Analyzer:
         rows = []
         for r in results:
             m = self.compute_metrics(r)
+            cfg = r.config if isinstance(r.config, dict) else vars(r.config)
             rows.append({
-                "threshold": r.config.threshold,
-                "tp_pct": r.config.tp_pct,
-                "sl_pct": r.config.sl_pct,
+                "threshold": cfg.get("threshold", 0),
+                "tp_pct": cfg.get("tp_pct", 0),
+                "sl_pct": cfg.get("sl_pct", 0),
                 "total_return": m["total_return"],
                 "win_rate": m["win_rate"],
                 "max_drawdown_pct": m["max_drawdown_pct"],

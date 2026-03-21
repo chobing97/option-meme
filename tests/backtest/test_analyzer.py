@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from src.backtest.analyzer import Analyzer
 from src.backtest.result import Trade, BarSnapshot, SimulationResult
-from src.backtest.strategy import StrategyConfig
+from src.backtest.strategy import PutBuyConfig as StrategyConfig
 
 
 # ---------------------------------------------------------------------------

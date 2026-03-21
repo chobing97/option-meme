@@ -1,37 +1,30 @@
-from dataclasses import dataclass
-from enum import Enum
-from typing import Optional
+from dataclasses import dataclass, asdict
 
-
-class Action(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
+from src.backtest.strategy.base import BaseStrategy, Action, ActionResult
 
 
 @dataclass
-class ActionResult:
-    action: Action
-    reason: str = ""   # PEAK_SIGNAL / TROUGH_SIGNAL / TP / SL / FORCE_CLOSE / ""
-
-
-@dataclass
-class StrategyConfig:
+class PutBuyConfig:
     threshold: float = 0.3
     tp_pct: float = 0.10
     sl_pct: float = -0.05
     force_close_minutes: int = 120
-    max_positions: int = 1
     quantity: int = 1
     option_type: str = "put"
     strike_selection: str = "atm"
 
 
-class Strategy:
-    """Determines trading actions based on bar data and position state."""
+class PutBuyStrategy(BaseStrategy):
+    """Original put-buy strategy: PEAK -> buy put, TROUGH -> sell put."""
 
-    def __init__(self, config: StrategyConfig):
+    def __init__(self, config: PutBuyConfig):
         self.config = config
+
+    def name(self) -> str:
+        return "put_buy"
+
+    def config_dict(self) -> dict:
+        return asdict(self.config)
 
     def on_bar(self, bar: dict, position, session_minutes: int = 390) -> ActionResult:
         """
