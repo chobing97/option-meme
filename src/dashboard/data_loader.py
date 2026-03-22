@@ -943,6 +943,80 @@ def load_prediction_for_backtest(
     return result
 
 
+def find_backtest_defaults(
+    market: str = "us",
+    model_type: str = "gbm",
+) -> dict | None:
+    """Find a valid backtest configuration by scanning prediction directories.
+
+    Returns dict with keys: timeframe, label_config, model_config, symbol,
+    date_min, date_max.  Returns None if no valid config found.
+    """
+    bt_symbols = get_backtest_symbols(market)
+    if not bt_symbols:
+        return None
+
+    # Preferred order
+    label_prefs = ["L2", "L1", "L3"]
+    model_prefs = ["M3", "M1", "M2", "M4"]
+    tf_prefs = ["1m", "5m"]
+
+    for tf in tf_prefs:
+        for lc in label_prefs:
+            for mc in model_prefs:
+                for sym in bt_symbols:
+                    pred_dir = (
+                        PREDICTIONS_DIR / model_type / tf / lc / mc / market / sym
+                    )
+                    if not pred_dir.exists():
+                        continue
+                    files = sorted(pred_dir.glob("*.parquet"))
+                    if not files:
+                        continue
+                    # Read date range from first and last files
+                    first = pd.read_parquet(files[0], columns=["datetime"])
+                    last = pd.read_parquet(files[-1], columns=["datetime"])
+                    dt_all = pd.concat([first, last])["datetime"]
+                    dt_all = pd.to_datetime(dt_all)
+                    if dt_all.dt.tz is not None:
+                        dt_all = dt_all.dt.tz_localize(None)
+                    # Also check options data date range
+                    opts_dir = RAW_OPTIONS_DIR / market / sym
+                    opt_min, opt_max = None, None
+                    if opts_dir.exists():
+                        opt_files = sorted(opts_dir.glob("[0-9]*.parquet"))
+                        if opt_files:
+                            of = pd.read_parquet(opt_files[0], columns=["datetime"])
+                            ol = pd.read_parquet(opt_files[-1], columns=["datetime"])
+                            opt_dt = pd.concat([of, ol])["datetime"]
+                            opt_dt = pd.to_datetime(opt_dt)
+                            if opt_dt.dt.tz is not None:
+                                opt_dt = opt_dt.dt.tz_localize(None)
+                            opt_min = opt_dt.min().date()
+                            opt_max = opt_dt.max().date()
+
+                    date_min = dt_all.min().date()
+                    date_max = dt_all.max().date()
+                    # Narrow to options data range if available
+                    if opt_min and opt_max:
+                        date_min = max(date_min, opt_min)
+                        date_max = min(date_max, opt_max)
+
+                    if date_min >= date_max:
+                        continue
+
+                    return {
+                        "timeframe": tf,
+                        "label_config": lc,
+                        "model_config": mc,
+                        "symbol": sym,
+                        "date_min": date_min,
+                        "date_max": date_max,
+                    }
+
+    return None
+
+
 def run_dashboard_backtest(
     market: str, symbol: str, pred_df: pd.DataFrame,
     threshold: float, tp_pct: float, sl_pct: float,

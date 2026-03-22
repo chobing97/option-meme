@@ -20,6 +20,7 @@ from dashboard.components.filters import (
     timeframe_selector,
 )
 from dashboard.data_loader import (
+    find_backtest_defaults,
     get_backtest_symbols,
     has_options_data,
     load_options_ohlcv_by_strike,
@@ -31,9 +32,18 @@ from dashboard.data_loader import (
 st.set_page_config(page_title="Backtest", layout="wide")
 st.title("Phase 6: Backtest")
 
+# ── Auto-detect valid defaults ─────────────────────────────
+
+defaults = find_backtest_defaults(market="us")
+
 # ── Sidebar ────────────────────────────────────────────────
 
 reload_button()
+
+# Timeframe: pre-select from defaults
+if defaults and "bt_timeframe_init" not in st.session_state:
+    st.session_state["timeframe"] = defaults["timeframe"]
+    st.session_state["bt_timeframe_init"] = True
 timeframe = timeframe_selector(key="timeframe")
 
 # Symbol selector (only symbols with options data)
@@ -42,16 +52,26 @@ if not symbols:
     st.warning("No symbols with options data found.")
     st.stop()
 
-symbol = st.sidebar.selectbox("Symbol", symbols, key="bt_symbol")
+# Pre-select symbol from defaults
+default_sym_idx = 0
+if defaults and defaults["symbol"] in symbols:
+    default_sym_idx = symbols.index(defaults["symbol"])
+symbol = st.sidebar.selectbox("Symbol", symbols, index=default_sym_idx, key="bt_symbol")
 
-# Label/Model config
+# Label/Model config: pre-select from defaults
+if defaults and "bt_lc_init" not in st.session_state:
+    st.session_state["bt_lc"] = defaults["label_config"]
+    st.session_state["bt_mc"] = defaults["model_config"]
+    st.session_state["bt_lc_init"] = True
 lc = label_config_selector(key="bt_lc", timeframe=timeframe)
 mc = model_config_selector(key="bt_mc", timeframe=timeframe)
 
-# Date range
+# Date range: pre-populate from defaults (options data range)
+default_start = defaults["date_min"] if defaults else None
+default_end = defaults["date_max"] if defaults else None
 st.sidebar.markdown("### Date Range")
-start_date = st.sidebar.date_input("Start", value=None, key="bt_start_date")
-end_date = st.sidebar.date_input("End", value=None, key="bt_end_date")
+start_date = st.sidebar.date_input("Start", value=default_start, key="bt_start_date")
+end_date = st.sidebar.date_input("End", value=default_end, key="bt_end_date")
 
 # Strategy parameters
 st.sidebar.markdown("### Strategy")
@@ -74,12 +94,18 @@ if run_clicked:
         st.error(f"No prediction data found for {symbol} ({lc}/{mc}/{timeframe}). Run batch predict first.")
         st.stop()
 
-    # Apply date filters
+    # Apply date filters (strip tz for comparison)
     pred_df["datetime"] = pd.to_datetime(pred_df["datetime"])
+    dt_col = pred_df["datetime"]
+    if dt_col.dt.tz is not None:
+        dt_naive = dt_col.dt.tz_localize(None)
+    else:
+        dt_naive = dt_col
     if start_date is not None:
-        pred_df = pred_df[pred_df["datetime"] >= pd.Timestamp(start_date)]
+        pred_df = pred_df[dt_naive >= pd.Timestamp(start_date)]
+        dt_naive = dt_naive[pred_df.index]
     if end_date is not None:
-        pred_df = pred_df[pred_df["datetime"] <= pd.Timestamp(end_date) + pd.Timedelta(days=1)]
+        pred_df = pred_df[dt_naive <= pd.Timestamp(end_date) + pd.Timedelta(days=1)]
 
     if pred_df.empty:
         st.error("No prediction data in the selected date range.")
