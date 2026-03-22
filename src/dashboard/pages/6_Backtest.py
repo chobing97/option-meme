@@ -250,6 +250,17 @@ else:
                 st.info(f"No stock data for {selected_date}")
             else:
                 stock_bars["datetime"] = pd.to_datetime(stock_bars["datetime"])
+                # Filter to regular session hours (US: 09:30~16:00)
+                if stock_bars["datetime"].dt.tz is not None:
+                    _time = stock_bars["datetime"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
+                else:
+                    _time = stock_bars["datetime"].dt.strftime("%H:%M")
+                stock_bars = stock_bars[(_time >= "09:30") & (_time < "16:00")]
+
+                if stock_bars.empty:
+                    st.info(f"No regular session data for {selected_date}")
+                else:
+                    pass  # continue below
 
                 fig_stock = make_subplots(
                     rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03,
@@ -299,10 +310,21 @@ else:
                     # Threshold line
                     fig_stock.add_hline(y=threshold, line_dash="dash", line_color="gray", row=2, col=1)
 
+                # Set x-axis range to regular session hours
+                from datetime import datetime as _dt
+                _session_start = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("09:30", "%H:%M").time()))
+                _session_end = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("16:00", "%H:%M").time()))
+                if stock_bars["datetime"].dt.tz is not None:
+                    _tz = stock_bars["datetime"].dt.tz
+                    _session_start = _session_start.tz_localize(_tz)
+                    _session_end = _session_end.tz_localize(_tz)
+
                 fig_stock.update_layout(
                     height=500, margin=dict(l=40, r=20, t=30, b=30),
                     xaxis2_rangeslider_visible=False,
                     xaxis_rangeslider_visible=False,
+                    xaxis_range=[_session_start, _session_end],
+                    xaxis2_range=[_session_start, _session_end],
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
                 st.plotly_chart(fig_stock, use_container_width=True)
