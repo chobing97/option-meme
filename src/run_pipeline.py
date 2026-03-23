@@ -1392,12 +1392,14 @@ def run_backtest(
         **strategy_kwargs,
     )
 
-    # 4. Create BacktestExecutor and load data
-    executor = BacktestExecutor(symbols=symbols_with_options, market=market)
-    executor.load_data()
+    # 4. Create MarketData, Executor, and Engine
+    from src.backtest.market_data import BacktestMarketData
+    market_data = BacktestMarketData(symbols=symbols_with_options, market=market)
+    market_data.load_data()
+    executor = BacktestExecutor(market_data=market_data)
 
     # 5. Create BacktestEngine
-    engine = BacktestEngine(strategy, executor)
+    engine = BacktestEngine(strategy, executor, market_data)
 
     # 6. Run backtest
     session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES
@@ -1458,6 +1460,7 @@ def run_backtest_grid(
     from src.backtest.analyzer import Analyzer
     from src.backtest.engine import BacktestEngine
     from src.backtest.executor.backtest import BacktestExecutor
+    from src.backtest.market_data import BacktestMarketData
     from src.backtest.strategy import create_strategy
 
     if thresholds is None:
@@ -1508,11 +1511,12 @@ def run_backtest_grid(
     print(f"\n=== Backtest Grid: {market} / {symbols_str} [{timeframe} {label_config}/{model_config}] ===")
     print(f"Strategy: {strategy_name}, {n_combos} combinations to test\n")
 
-    # 3. Create executor and engine
-    executor = BacktestExecutor(symbols=symbols_with_options, market=market)
-    executor.load_data()
+    # 3. Create market data, executor, and engine
+    market_data = BacktestMarketData(symbols=symbols_with_options, market=market)
+    market_data.load_data()
+    executor = BacktestExecutor(market_data=market_data)
 
-    engine = BacktestEngine(strategies[0], executor)
+    engine = BacktestEngine(strategies[0], executor, market_data)
 
     # 4. Run grid
     session_minutes = KR_SESSION_MINUTES if market == "kr" else US_SESSION_MINUTES

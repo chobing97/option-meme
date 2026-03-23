@@ -1,8 +1,11 @@
 import pytest
 from datetime import datetime
 
+import pandas as pd
+
 from src.backtest.strategy import PutBuyConfig as StrategyConfig
 from src.backtest.executor.base import OptionContract, Position
+from src.backtest.types import PortfolioState
 
 
 @pytest.fixture
@@ -56,6 +59,7 @@ def losing_position(sample_contract):
     )
 
 
+# Legacy dict-based bar fixtures (kept for backward compatibility)
 @pytest.fixture
 def sample_bar():
     return {
@@ -94,3 +98,54 @@ def neutral_bar():
         "trough_prob": 0.1,
         "minutes_from_open": 60,
     }
+
+
+# New pd.Series-based row fixtures
+@pytest.fixture
+def sample_row():
+    return pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.2,
+                       "trough_prob": 0.2, "minutes_from_open": 60})
+
+
+@pytest.fixture
+def peak_row():
+    return pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.5,
+                       "trough_prob": 0.1, "minutes_from_open": 60})
+
+
+@pytest.fixture
+def trough_row():
+    return pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.1,
+                       "trough_prob": 0.5, "minutes_from_open": 60})
+
+
+@pytest.fixture
+def neutral_row():
+    return pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.1,
+                       "trough_prob": 0.1, "minutes_from_open": 60})
+
+
+# Portfolio fixtures
+@pytest.fixture
+def portfolio_with_position(open_position):
+    return PortfolioState(cash=100_000, positions=[open_position], equity=100_300)
+
+
+@pytest.fixture
+def portfolio_with_profitable(profitable_position):
+    return PortfolioState(cash=100_000, positions=[profitable_position], equity=100_336)
+
+
+@pytest.fixture
+def portfolio_with_losing(losing_position):
+    return PortfolioState(cash=100_000, positions=[losing_position], equity=100_282)
+
+
+@pytest.fixture
+def empty_portfolio():
+    return PortfolioState(cash=100_000, positions=[], equity=100_000)
+
+
+@pytest.fixture
+def default_context():
+    return {"session_minutes": 390, "bar_index": 0, "timestamp": datetime(2026, 3, 21, 10, 30)}

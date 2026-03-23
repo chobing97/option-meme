@@ -94,11 +94,29 @@ st.sidebar.markdown("### Date Range")
 start_date = st.sidebar.date_input("Start", value=default_start, key="bt_start_date")
 end_date = st.sidebar.date_input("End", value=default_end, key="bt_end_date")
 
-# Strategy parameters
+# Strategy selection
+from src.backtest.strategy import list_strategies
 st.sidebar.markdown("### Strategy")
+strategy_name = st.sidebar.selectbox("Strategy", list_strategies(), key="bt_strategy")
+
+# Common parameters
 threshold = st.sidebar.slider("Threshold", 0.1, 0.9, 0.3, 0.05, key="bt_threshold")
 tp_pct = st.sidebar.slider("Take Profit %", 0.01, 0.50, 0.10, 0.01, key="bt_tp")
 sl_pct = st.sidebar.slider("Stop Loss %", -0.50, -0.01, -0.05, 0.01, key="bt_sl")
+
+# Strategy-specific parameters
+strategy_kwargs: dict = {}
+if strategy_name in ("filtered_put", "call_buy"):
+    st.sidebar.markdown("### Strategy Filters")
+    strategy_kwargs["min_holding_minutes"] = st.sidebar.slider(
+        "Min Holding (min)", 0, 120, 30, 5, key="bt_min_hold")
+    strategy_kwargs["cooldown_minutes"] = st.sidebar.slider(
+        "Cooldown (min)", 0, 120, 30, 5, key="bt_cooldown")
+    strategy_kwargs["max_trades_per_day"] = st.sidebar.slider(
+        "Max Trades/Day", 1, 10, 3, 1, key="bt_max_trades")
+if strategy_name == "filtered_put":
+    strategy_kwargs["min_prob_gap"] = st.sidebar.slider(
+        "Min Prob Gap", 0.0, 0.5, 0.2, 0.05, key="bt_prob_gap")
 
 # Run button
 run_clicked = st.sidebar.button("Run Backtest", type="primary")
@@ -136,6 +154,7 @@ if run_clicked:
         results = run_dashboard_backtest(
             market="us", symbol=symbol, pred_df=pred_df,
             threshold=threshold, tp_pct=tp_pct, sl_pct=sl_pct,
+            strategy_name=strategy_name, strategy_kwargs=strategy_kwargs,
         )
     st.session_state["bt_results"] = results
     st.session_state["bt_symbol_used"] = symbol
@@ -356,8 +375,11 @@ else:
                     textfont=dict(size=8, color="red"),
                 ), row=1, col=1)
 
-        # Row 2: Probability overlay
-        if not day_eq.empty:
+        # Row 2: Probability overlay (only if data has prediction columns with nonzero values)
+        has_prob = (not day_eq.empty
+                    and "peak_prob" in day_eq.columns
+                    and day_eq["peak_prob"].sum() > 0)
+        if has_prob:
             fig_daily.add_trace(go.Scatter(
                 x=day_eq["timestamp"], y=day_eq["peak_prob"],
                 mode="lines", name="Peak Prob",

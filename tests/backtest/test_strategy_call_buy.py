@@ -1,10 +1,12 @@
-"""Tests for CallBuyStrategy — 12 tests."""
+"""Tests for CallBuyStrategy — 12 tests (migrated to Order-based interface)."""
 
 import pytest
 from datetime import datetime
 
+import pandas as pd
+
 from src.backtest.strategy.call_buy import CallBuyStrategy, CallBuyConfig
-from src.backtest.strategy.base import Action, ActionResult
+from src.backtest.types import Order, Side, PortfolioState
 from src.backtest.executor.base import OptionContract, Position
 
 
@@ -46,70 +48,101 @@ def cb_losing(cb_contract):
     return Position(contract=cb_contract, quantity=1, avg_entry_price=3.0, current_price=2.67, unrealized_pnl_pct=-0.11)
 
 
+@pytest.fixture
+def cb_portfolio(cb_position):
+    return PortfolioState(cash=100_000, positions=[cb_position], equity=100_300)
+
+
+@pytest.fixture
+def cb_portfolio_profitable(cb_profitable):
+    return PortfolioState(cash=100_000, positions=[cb_profitable], equity=100_318)
+
+
+@pytest.fixture
+def cb_portfolio_losing(cb_losing):
+    return PortfolioState(cash=100_000, positions=[cb_losing], equity=100_267)
+
+
+@pytest.fixture
+def cb_empty_portfolio():
+    return PortfolioState(cash=100_000, positions=[], equity=100_000)
+
+
+@pytest.fixture
+def cb_context():
+    return {"session_minutes": 390}
+
+
 class TestCallBuyStrategy:
 
     # 1. Trough signal, no position -> BUY (opposite of put)
-    def test_trough_buy(self, cb_strategy):
-        bar = {"close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=None)
-        assert result.action == Action.BUY
-        assert result.reason == "TROUGH_SIGNAL"
+    def test_trough_buy(self, cb_strategy, cb_empty_portfolio, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_empty_portfolio, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.BUY
+        assert orders[0].reason == "TROUGH_SIGNAL"
+        assert orders[0].option_type == "call"
 
     # 2. Peak signal, no position -> HOLD (call strategy doesn't buy on peak)
-    def test_peak_no_buy(self, cb_strategy):
-        bar = {"close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=None)
-        assert result.action == Action.HOLD
+    def test_peak_no_buy(self, cb_strategy, cb_empty_portfolio, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_empty_portfolio, cb_context)
+        assert len(orders) == 0
 
     # 3. Peak signal with position, held long enough -> SELL PEAK_SIGNAL
-    def test_peak_sell_after_min_holding(self, cb_strategy, cb_position):
+    def test_peak_sell_after_min_holding(self, cb_strategy, cb_portfolio, cb_context):
         cb_strategy._entry_minute = 10
-        bar = {"close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 50}
-        result = cb_strategy.on_bar(bar, position=cb_position)
-        assert result.action == Action.SELL
-        assert result.reason == "PEAK_SIGNAL"
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 50})
+        orders = cb_strategy.on_bar(row, cb_portfolio, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.SELL
+        assert orders[0].reason == "PEAK_SIGNAL"
 
     # 4. Peak signal but held too short -> HOLD
-    def test_peak_hold_min_holding(self, cb_strategy, cb_position):
+    def test_peak_hold_min_holding(self, cb_strategy, cb_portfolio, cb_context):
         cb_strategy._entry_minute = 40
-        bar = {"close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 50}
-        result = cb_strategy.on_bar(bar, position=cb_position)
-        assert result.action == Action.HOLD
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.6, "trough_prob": 0.2, "minutes_from_open": 50})
+        orders = cb_strategy.on_bar(row, cb_portfolio, cb_context)
+        assert len(orders) == 0
 
     # 5. Force close with position
-    def test_force_close(self, cb_strategy, cb_position):
-        bar = {"close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 280}
-        result = cb_strategy.on_bar(bar, position=cb_position, session_minutes=390)
-        assert result.action == Action.SELL
-        assert result.reason == "FORCE_CLOSE"
+    def test_force_close(self, cb_strategy, cb_portfolio, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 280})
+        orders = cb_strategy.on_bar(row, cb_portfolio, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.SELL
+        assert orders[0].reason == "FORCE_CLOSE"
 
     # 6. Stop loss
-    def test_sl(self, cb_strategy, cb_losing):
-        bar = {"close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=cb_losing)
-        assert result.action == Action.SELL
-        assert result.reason == "SL"
+    def test_sl(self, cb_strategy, cb_portfolio_losing, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_portfolio_losing, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.SELL
+        assert orders[0].reason == "SL"
 
     # 7. Take profit
-    def test_tp(self, cb_strategy, cb_profitable):
-        bar = {"close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=cb_profitable)
-        assert result.action == Action.SELL
-        assert result.reason == "TP"
+    def test_tp(self, cb_strategy, cb_portfolio_profitable, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.1, "trough_prob": 0.1, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_portfolio_profitable, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.SELL
+        assert orders[0].reason == "TP"
 
     # 8. Max trades per day
-    def test_max_trades_per_day(self, cb_strategy):
+    def test_max_trades_per_day(self, cb_strategy, cb_empty_portfolio, cb_context):
         cb_strategy._trades_today = 3
-        bar = {"close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=None)
-        assert result.action == Action.HOLD
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_empty_portfolio, cb_context)
+        assert len(orders) == 0
 
     # 9. Cooldown after sell
-    def test_cooldown_after_sell(self, cb_strategy):
+    def test_cooldown_after_sell(self, cb_strategy, cb_empty_portfolio, cb_context):
         cb_strategy._last_sell_minute = 50
-        bar = {"close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=None)
-        assert result.action == Action.HOLD
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_empty_portfolio, cb_context)
+        assert len(orders) == 0
 
     # 10. on_day_start resets state
     def test_on_day_start(self, cb_strategy):
@@ -129,9 +162,10 @@ class TestCallBuyStrategy:
         assert d["threshold"] == 0.5
 
     # 12. BUY increments trades_today
-    def test_buy_increments_state(self, cb_strategy):
-        bar = {"close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60}
-        result = cb_strategy.on_bar(bar, position=None)
-        assert result.action == Action.BUY
+    def test_buy_increments_state(self, cb_strategy, cb_empty_portfolio, cb_context):
+        row = pd.Series({"symbol": "AAPL", "close": 150.0, "peak_prob": 0.2, "trough_prob": 0.6, "minutes_from_open": 60})
+        orders = cb_strategy.on_bar(row, cb_empty_portfolio, cb_context)
+        assert len(orders) == 1
+        assert orders[0].side == Side.BUY
         assert cb_strategy._trades_today == 1
         assert cb_strategy._entry_minute == 60

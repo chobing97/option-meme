@@ -1022,6 +1022,8 @@ def run_dashboard_backtest(
     market: str, symbol: str, pred_df: pd.DataFrame,
     threshold: float, tp_pct: float, sl_pct: float,
     session_minutes: int = 390,
+    strategy_name: str = "put_buy",
+    strategy_kwargs: dict | None = None,
 ) -> dict:
     """Run backtest and return analyzer results for dashboard display.
 
@@ -1031,12 +1033,18 @@ def run_dashboard_backtest(
     from src.backtest.analyzer import Analyzer
     from src.backtest.engine import BacktestEngine
     from src.backtest.executor.backtest import BacktestExecutor
-    from src.backtest.strategy import PutBuyStrategy, PutBuyConfig
+    from src.backtest.market_data import BacktestMarketData
+    from src.backtest.strategy import create_strategy
 
-    config = PutBuyConfig(threshold=threshold, tp_pct=tp_pct, sl_pct=sl_pct)
-    executor = BacktestExecutor(symbols=[symbol], market=market)
-    executor.load_data()
-    engine = BacktestEngine(PutBuyStrategy(config), executor)
+    if strategy_kwargs is None:
+        strategy_kwargs = {}
+
+    market_data = BacktestMarketData(symbols=[symbol], market=market)
+    market_data.load_data()
+    strategy = create_strategy(strategy_name, threshold=threshold, tp_pct=tp_pct,
+                               sl_pct=sl_pct, **strategy_kwargs)
+    executor = BacktestExecutor(market_data=market_data)
+    engine = BacktestEngine(strategy, executor, market_data)
     result = engine.run(pred_df, market, session_minutes)
 
     analyzer = Analyzer()

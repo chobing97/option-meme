@@ -9,10 +9,11 @@ class Trade:
     trade_id: int
     symbol: str
     entry_time: datetime
-    entry_price: float          # option buy price
-    entry_strike: float
-    entry_expiry: datetime
-    entry_underlying: float     # stock price at entry
+    entry_price: float          # option buy price (or stock price)
+    entry_strike: Optional[float] = None        # None for stock trades
+    entry_expiry: Optional[datetime] = None      # None for stock trades
+    entry_underlying: float = 0.0     # stock price at entry
+    instrument_type: str = "option"   # "option" | "stock"
     exit_time: Optional[datetime] = None
     exit_price: float = 0.0
     exit_underlying: float = 0.0
@@ -48,16 +49,16 @@ class BarSnapshot:
     timestamp: datetime
     symbol: str
     underlying_close: float
-    peak_prob: float
-    trough_prob: float
-    action: str                 # "BUY" / "SELL" / ""
-    reason: str                 # "PEAK_SIGNAL" / "TP" / "SL" / "FORCE_CLOSE" / "TROUGH_SIGNAL" / ""
-    position_qty: int
-    option_mark_price: float
-    cash: float
-    position_value: float       # position_qty * option_mark_price * 100
-    equity: float               # cash + position_value
-    drawdown_pct: float         # (equity - equity_high) / equity_high
+    peak_prob: float = 0.0      # optional: only for prediction-based strategies
+    trough_prob: float = 0.0    # optional: only for prediction-based strategies
+    action: str = ""            # "BUY" / "SELL" / ""
+    reason: str = ""            # "PEAK_SIGNAL" / "TP" / "SL" / "FORCE_CLOSE" / "TROUGH_SIGNAL" / ""
+    position_qty: int = 0
+    option_mark_price: float = 0.0
+    cash: float = 0.0
+    position_value: float = 0.0   # position_qty * option_mark_price * 100
+    equity: float = 0.0           # cash + position_value
+    drawdown_pct: float = 0.0     # (equity - equity_high) / equity_high
 
 
 # Forward reference for StrategyConfig

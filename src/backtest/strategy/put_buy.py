@@ -1,6 +1,9 @@
 from dataclasses import dataclass, asdict
 
-from src.backtest.strategy.base import BaseStrategy, Action, ActionResult
+import pandas as pd
+
+from src.backtest.strategy.base import BaseStrategy
+from src.backtest.types import Order, Side, PortfolioState
 
 
 @dataclass
@@ -26,62 +29,51 @@ class PutBuyStrategy(BaseStrategy):
     def config_dict(self) -> dict:
         return asdict(self.config)
 
-    def on_bar(self, bar: dict, position, session_minutes: int = 390) -> ActionResult:
-        """
-        Determine action for current bar.
-
-        Args:
-            bar: dict with keys: close, peak_prob, trough_prob, minutes_from_open
-            position: Position object or None (from executor.base)
-            session_minutes: total session length in minutes (for force close calc)
-
-        Returns:
-            ActionResult with action and reason.
-
-        Priority when position exists:
-            1. Force close (minutes_from_open >= session_minutes - force_close_minutes)
-            2. Stop loss (unrealized_pnl_pct <= sl_pct)
-            3. Take profit (unrealized_pnl_pct >= tp_pct)
-            4. Trough signal (trough_prob >= threshold and trough_prob > peak_prob)
-            5. Hold
-
-        When no position:
-            6. Peak signal (peak_prob >= threshold and peak_prob > trough_prob)
-            7. Hold
-        """
+    def on_bar(self, row: pd.Series, portfolio: PortfolioState, context: dict) -> list[Order]:
         c = self.config
-        peak_prob = bar.get("peak_prob", 0.0)
-        trough_prob = bar.get("trough_prob", 0.0)
-        minutes_from_open = bar.get("minutes_from_open", 0)
+        symbol = row.get("symbol", "")
+        close = row.get("close", 0.0)
+        peak_prob = row.get("peak_prob", 0.0)
+        trough_prob = row.get("trough_prob", 0.0)
+        minutes_from_open = row.get("minutes_from_open", 0)
+        session_minutes = context.get("session_minutes", 390)
+
+        position = portfolio.get_position(symbol)
 
         if position is not None:
             # 1. Force close
             force_close_at = session_minutes - c.force_close_minutes
             if minutes_from_open >= force_close_at:
-                return ActionResult(Action.SELL, "FORCE_CLOSE")
+                return [Order(symbol=symbol, side=Side.SELL, quantity=position.quantity,
+                             reason="FORCE_CLOSE", instrument_type="option", option_type=c.option_type)]
 
             # 2. Stop loss
             if position.unrealized_pnl_pct <= c.sl_pct:
-                return ActionResult(Action.SELL, "SL")
+                return [Order(symbol=symbol, side=Side.SELL, quantity=position.quantity,
+                             reason="SL", instrument_type="option", option_type=c.option_type)]
 
             # 3. Take profit
             if position.unrealized_pnl_pct >= c.tp_pct:
-                return ActionResult(Action.SELL, "TP")
+                return [Order(symbol=symbol, side=Side.SELL, quantity=position.quantity,
+                             reason="TP", instrument_type="option", option_type=c.option_type)]
 
             # 4. Trough signal
             if trough_prob >= c.threshold and trough_prob > peak_prob:
-                return ActionResult(Action.SELL, "TROUGH_SIGNAL")
+                return [Order(symbol=symbol, side=Side.SELL, quantity=position.quantity,
+                             reason="TROUGH_SIGNAL", instrument_type="option", option_type=c.option_type)]
 
-            return ActionResult(Action.HOLD)
+            return []
 
         else:
             # Don't buy too close to close
             force_close_at = session_minutes - c.force_close_minutes
             if minutes_from_open >= force_close_at:
-                return ActionResult(Action.HOLD)
+                return []
 
-            # 6. Peak signal
+            # Peak signal -> BUY
             if peak_prob >= c.threshold and peak_prob > trough_prob:
-                return ActionResult(Action.BUY, "PEAK_SIGNAL")
+                return [Order(symbol=symbol, side=Side.BUY, quantity=c.quantity,
+                             reason="PEAK_SIGNAL", instrument_type="option", option_type=c.option_type,
+                             strike_selection=c.strike_selection, reference_price=close)]
 
-            return ActionResult(Action.HOLD)
+            return []

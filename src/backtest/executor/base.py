@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.backtest.types import Order, OrderResult, PortfolioState
 
 
 @dataclass
@@ -32,6 +37,7 @@ class Position:
             self.unrealized_pnl_pct = (price - self.avg_entry_price) / self.avg_entry_price
 
 
+# Kept for backward compatibility — new code should use OrderResult from types.py
 @dataclass
 class FillResult:
     status: str               # "FILLED" or "REJECTED"
@@ -42,44 +48,24 @@ class FillResult:
 
 
 class Executor(ABC):
-    """Abstract interface for trade execution. Implemented by BacktestExecutor and LiveExecutor."""
+    """Abstract broker interface. Executes orders, manages cash/positions."""
 
     @abstractmethod
-    def get_option_chain(self, symbol: str, option_type: str, timestamp: datetime) -> list[OptionContract]:
-        """Get available option contracts at given timestamp."""
+    def execute(self, order: Order, timestamp: datetime) -> OrderResult:
+        """Execute a trading order. Returns fill result."""
         ...
 
     @abstractmethod
-    def execute_buy(self, contract: OptionContract, quantity: int, timestamp: datetime) -> FillResult:
-        """Execute a buy order. Returns fill result."""
+    def get_portfolio_state(self) -> PortfolioState:
+        """Return snapshot of cash + positions + equity."""
         ...
 
     @abstractmethod
-    def execute_sell(self, contract: OptionContract, quantity: int, timestamp: datetime) -> FillResult:
-        """Execute a sell order. Returns fill result."""
-        ...
-
-    @abstractmethod
-    def get_mark_price(self, contract: OptionContract, timestamp: datetime) -> float:
-        """Get current mark-to-market price for a contract."""
-        ...
-
-    @abstractmethod
-    def get_cash(self) -> float:
-        """Get current cash balance."""
-        ...
-
-    @abstractmethod
-    def get_positions(self) -> list[Position]:
-        """Get all open positions."""
-        ...
-
-    @abstractmethod
-    def get_position(self, symbol: str) -> Optional[Position]:
-        """Get position for a specific underlying symbol, or None."""
+    def update_marks(self, timestamp: datetime) -> None:
+        """Mark-to-market all positions at given timestamp."""
         ...
 
     @abstractmethod
     def reset(self) -> None:
-        """Reset executor state (for grid search - run multiple backtests)."""
+        """Reset state for grid search."""
         ...

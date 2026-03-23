@@ -1,4 +1,4 @@
-"""BacktestEngine — connects Strategy + Executor and runs the backtest loop."""
+"""BacktestEngine — pure loop connecting Strategy + Executor + MarketData."""
 
 from __future__ import annotations
 
@@ -7,31 +7,31 @@ from datetime import datetime
 from typing import Optional
 
 from src.backtest.result import Trade, BarSnapshot, SimulationResult
-from src.backtest.strategy.base import BaseStrategy, Action
-from src.backtest.executor.base import Executor, Position
+from src.backtest.strategy.base import BaseStrategy
+from src.backtest.executor.base import Executor
+from src.backtest.market_data import MarketData
+from src.backtest.types import Side, OrderResult
 
 
 class BacktestEngine:
-    """Connects Strategy + Executor, runs the backtest loop."""
+    """Pure loop engine. Delegates all decisions to Strategy, execution to Executor."""
 
-    def __init__(self, strategy: BaseStrategy, executor: Executor):
+    def __init__(self, strategy: BaseStrategy, executor: Executor, market_data: MarketData):
         self.strategy = strategy
         self.executor = executor
+        self.market_data = market_data
+        # Inject market_data into strategy
+        self.strategy.set_market_data(market_data)
 
     # ------------------------------------------------------------------
     def run(
         self,
-        pred_df: pd.DataFrame,
+        df: pd.DataFrame,
         market: str = "us",
         session_minutes: int = 390,
     ) -> SimulationResult:
-        """
-        Run backtest on prediction data.
-
-        pred_df columns required:
-            datetime, symbol, close, peak_prob, trough_prob, minutes_from_open
-        """
-        if pred_df.empty:
+        """Run backtest. Engine does NOT know about DataFrame columns — Strategy does."""
+        if df.empty:
             return SimulationResult(
                 trades=[],
                 snapshots=[],
@@ -39,40 +39,43 @@ class BacktestEngine:
                 metadata={"market": market, "symbols": [], "date_range": "", "timeframe": "1m", "total_bars": 0},
             )
 
-        df = pred_df.sort_values("datetime").reset_index(drop=True)
+        df = df.sort_values("datetime").reset_index(drop=True)
 
         trades: list[Trade] = []
         snapshots: list[BarSnapshot] = []
 
-        # Per-symbol state
-        open_trades: dict[str, Trade] = {}          # symbol -> open Trade
-        entry_bar_counts: dict[str, int] = {}       # symbol -> bar index at entry
-        bar_counts: dict[str, int] = {}             # symbol -> bars seen
+        open_trades: dict[str, Trade] = {}
+        entry_bar_counts: dict[str, int] = {}
+        bar_counts: dict[str, int] = {}
 
         trade_id_counter = 0
-        equity_high = self.executor.get_cash()
+        portfolio = self.executor.get_portfolio_state()
+        equity_high = portfolio.equity if portfolio.equity > 0 else portfolio.cash
 
         prev_date: Optional[datetime] = None
+        last_ts = None
 
         for idx, row in df.iterrows():
             ts: datetime = row["datetime"]
             if isinstance(ts, pd.Timestamp):
                 ts = ts.to_pydatetime()
             symbol: str = row["symbol"]
-            close: float = row["close"]
-            peak_prob: float = row["peak_prob"]
-            trough_prob: float = row["trough_prob"]
-            minutes_from_open: float = row["minutes_from_open"]
+            last_ts = ts
 
             current_date = ts.date()
 
-            # --- Day boundary: force close all open positions from previous day ---
+            # --- Day boundary: delegate to strategy.on_day_end() ---
             if prev_date is not None and current_date != prev_date:
-                self._force_close_all(
-                    open_trades, entry_bar_counts, bar_counts,
-                    trades, prev_date, snapshots, equity_high,
-                )
-                equity_high = max(equity_high, self._current_equity())
+                portfolio = self.executor.get_portfolio_state()
+                close_orders = self.strategy.on_day_end(portfolio, {"session_minutes": session_minutes})
+                for order in close_orders:
+                    result = self.executor.execute(order, ts)
+                    if result.status == "FILLED":
+                        self._record_sell(
+                            result, order, ts, open_trades, entry_bar_counts,
+                            bar_counts, trades, snapshots, equity_high, row,
+                        )
+                equity_high = max(equity_high, self.executor.get_portfolio_state().equity)
                 self.strategy.reset()
                 self.strategy.on_day_start(str(current_date))
 
@@ -81,104 +84,82 @@ class BacktestEngine:
             # Track bars per symbol
             bar_counts[symbol] = bar_counts.get(symbol, 0) + 1
 
-            # Get current position for this symbol
-            position: Optional[Position] = self.executor.get_position(symbol)
+            # Mark-to-market all positions
+            self.executor.update_marks(ts)
 
-            # Update mark price if position exists
-            if position is not None:
-                mark = self.executor.get_mark_price(position.contract, ts)
-                position.update_mark(mark)
+            # Get portfolio state for strategy
+            portfolio = self.executor.get_portfolio_state()
 
-            # Build bar dict for strategy
-            bar = {
-                "close": close,
-                "peak_prob": peak_prob,
-                "trough_prob": trough_prob,
-                "minutes_from_open": minutes_from_open,
-            }
+            # Strategy decides
+            context = {"session_minutes": session_minutes, "bar_index": idx, "timestamp": ts}
+            orders = self.strategy.on_bar(row, portfolio, context)
 
-            action_result = self.strategy.on_bar(bar, position, session_minutes)
-
+            # Execute orders
             action_str = ""
             reason_str = ""
-
-            if action_result.action == Action.BUY and symbol not in open_trades:
-                _cfg = self.strategy.config_dict()
-                chain = self.executor.get_option_chain(symbol, _cfg.get("option_type", "put"), ts)
-                if chain:
-                    # ATM selection
-                    atm = min(chain, key=lambda c: abs(c.strike - close))
-                    fill = self.executor.execute_buy(atm, _cfg.get("quantity", 1), ts)
-                    if fill.status == "FILLED":
+            for order in orders:
+                result = self.executor.execute(order, ts)
+                if result.status == "FILLED":
+                    if order.side == Side.BUY:
                         trade_id_counter += 1
                         t = Trade(
                             trade_id=trade_id_counter,
-                            symbol=symbol,
+                            symbol=order.symbol,
                             entry_time=ts,
-                            entry_price=fill.fill_price,
-                            entry_strike=atm.strike,
-                            entry_expiry=atm.expiry,
-                            entry_underlying=close,
-                            quantity=_cfg.get("quantity", 1),
+                            entry_price=result.fill_price,
+                            entry_strike=result.contract.strike if result.contract else None,
+                            entry_expiry=result.contract.expiry if result.contract else None,
+                            entry_underlying=order.reference_price,
+                            instrument_type=order.instrument_type,
+                            quantity=order.quantity,
                         )
-                        open_trades[symbol] = t
-                        entry_bar_counts[symbol] = bar_counts[symbol]
+                        open_trades[order.symbol] = t
+                        entry_bar_counts[order.symbol] = bar_counts.get(order.symbol, 0)
                         action_str = "BUY"
-                        reason_str = action_result.reason
-
-            elif action_result.action == Action.SELL and symbol in open_trades:
-                t = open_trades[symbol]
-                pos = self.executor.get_position(symbol)
-                if pos is not None:
-                    fill = self.executor.execute_sell(pos.contract, pos.quantity, ts)
-                    if fill.status == "FILLED":
-                        holding_bars = bar_counts[symbol] - entry_bar_counts.get(symbol, bar_counts[symbol])
-                        holding_minutes = (ts - t.entry_time).total_seconds() / 60
-                        t.close(
-                            exit_time=ts,
-                            exit_price=fill.fill_price,
-                            exit_underlying=close,
-                            exit_reason=action_result.reason,
-                            holding_bars=holding_bars,
-                            holding_minutes=int(holding_minutes),
+                        reason_str = order.reason
+                    elif order.side == Side.SELL:
+                        self._record_sell(
+                            result, order, ts, open_trades, entry_bar_counts,
+                            bar_counts, trades, snapshots, equity_high, row,
                         )
-                        trades.append(t)
-                        del open_trades[symbol]
-                        if symbol in entry_bar_counts:
-                            del entry_bar_counts[symbol]
                         action_str = "SELL"
-                        reason_str = action_result.reason
+                        reason_str = order.reason
 
             # Compute snapshot
-            cash = self.executor.get_cash()
-            pos_value = self._total_position_value()
-            equity = cash + pos_value
-            equity_high = max(equity_high, equity)
-            dd_pct = (equity - equity_high) / equity_high if equity_high > 0 else 0.0
+            portfolio = self.executor.get_portfolio_state()
+            equity_high = max(equity_high, portfolio.equity)
+            dd_pct = (portfolio.equity - equity_high) / equity_high if equity_high > 0 else 0.0
 
-            pos = self.executor.get_position(symbol)
+            pos = portfolio.get_position(symbol)
+            close_price = float(row.get("close", 0.0)) if hasattr(row, "get") else float(row["close"]) if "close" in row.index else 0.0
             snapshots.append(BarSnapshot(
                 timestamp=ts,
                 symbol=symbol,
-                underlying_close=close,
-                peak_prob=peak_prob,
-                trough_prob=trough_prob,
+                underlying_close=close_price,
+                peak_prob=float(row.get("peak_prob", 0.0)) if hasattr(row, "get") else 0.0,
+                trough_prob=float(row.get("trough_prob", 0.0)) if hasattr(row, "get") else 0.0,
                 action=action_str,
                 reason=reason_str,
                 position_qty=pos.quantity if pos else 0,
                 option_mark_price=pos.current_price if pos else 0.0,
-                cash=cash,
-                position_value=pos_value,
-                equity=equity,
+                cash=portfolio.cash,
+                position_value=portfolio.equity - portfolio.cash,
+                equity=portfolio.equity,
                 drawdown_pct=dd_pct,
             ))
 
-        # End of data: force close remaining positions
-        if open_trades and prev_date is not None:
-            self._force_close_all(
-                open_trades, entry_bar_counts, bar_counts,
-                trades, prev_date, snapshots, equity_high,
-            )
+        # End of data: delegate to strategy.on_data_end()
+        if last_ts is not None:
+            portfolio = self.executor.get_portfolio_state()
+            if portfolio.positions:
+                end_orders = self.strategy.on_data_end(portfolio, {"session_minutes": session_minutes})
+                for order in end_orders:
+                    result = self.executor.execute(order, last_ts)
+                    if result.status == "FILLED":
+                        self._record_sell(
+                            result, order, last_ts, open_trades, entry_bar_counts,
+                            bar_counts, trades, snapshots, equity_high,
+                        )
 
         # Build metadata
         symbols = sorted(df["symbol"].unique().tolist())
@@ -202,7 +183,7 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     def run_grid(
         self,
-        pred_df: pd.DataFrame,
+        df: pd.DataFrame,
         market: str,
         strategies: list[BaseStrategy],
         session_minutes: int = 390,
@@ -211,87 +192,56 @@ class BacktestEngine:
         results = []
         for strategy in strategies:
             self.strategy = strategy
+            self.strategy.set_market_data(self.market_data)
             self.executor.reset()
-            result = self.run(pred_df, market, session_minutes)
+            result = self.run(df, market, session_minutes)
             results.append(result)
         return results
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _total_position_value(self) -> float:
-        """Sum position values: qty * current_price * 100 (options multiplier)."""
-        total = 0.0
-        for pos in self.executor.get_positions():
-            total += pos.quantity * pos.current_price * 100
-        return total
-
-    def _current_equity(self) -> float:
-        return self.executor.get_cash() + self._total_position_value()
-
-    def _force_close_all(
+    def _record_sell(
         self,
+        result: OrderResult,
+        order,
+        ts: datetime,
         open_trades: dict[str, Trade],
         entry_bar_counts: dict[str, int],
         bar_counts: dict[str, int],
         trades: list[Trade],
-        close_date,
         snapshots: list[BarSnapshot],
         equity_high: float,
+        row=None,
     ) -> None:
-        """Force close all open positions (day boundary or end of data)."""
-        for symbol in list(open_trades.keys()):
-            t = open_trades[symbol]
-            pos = self.executor.get_position(symbol)
-            if pos is None:
-                del open_trades[symbol]
-                continue
-            # Use last known time for the close
-            close_ts = t.entry_time  # fallback
-            # Find the latest bar timestamp for this symbol from snapshots
+        """Record a completed sell trade."""
+        symbol = order.symbol
+        if symbol not in open_trades:
+            return
+
+        t = open_trades[symbol]
+        holding_bars = bar_counts.get(symbol, 0) - entry_bar_counts.get(symbol, 0)
+        holding_minutes = (ts - t.entry_time).total_seconds() / 60
+
+        # Get underlying close from row if available
+        exit_underlying = 0.0
+        if row is not None:
+            exit_underlying = float(row.get("close", 0.0)) if hasattr(row, "get") else 0.0
+        elif snapshots:
             for snap in reversed(snapshots):
                 if snap.symbol == symbol:
-                    close_ts = snap.timestamp
+                    exit_underlying = snap.underlying_close
                     break
 
-            fill = self.executor.execute_sell(pos.contract, pos.quantity, close_ts)
-            if fill.status == "FILLED":
-                holding_bars = bar_counts.get(symbol, 0) - entry_bar_counts.get(symbol, 0)
-                holding_minutes = (close_ts - t.entry_time).total_seconds() / 60
-                # Use last known underlying close
-                exit_underlying = 0.0
-                for snap in reversed(snapshots):
-                    if snap.symbol == symbol:
-                        exit_underlying = snap.underlying_close
-                        break
-                t.close(
-                    exit_time=close_ts,
-                    exit_price=fill.fill_price,
-                    exit_underlying=exit_underlying,
-                    exit_reason="FORCE_CLOSE",
-                    holding_bars=holding_bars,
-                    holding_minutes=int(holding_minutes),
-                )
-                trades.append(t)
-                # Emit snapshot for force-close event
-                cash = self.executor.get_cash()
-                pos_value = self._total_position_value()
-                equity = cash + pos_value
-                snapshots.append(BarSnapshot(
-                    timestamp=close_ts,
-                    symbol=symbol,
-                    underlying_close=exit_underlying,
-                    peak_prob=0.0,
-                    trough_prob=0.0,
-                    action="SELL",
-                    reason="FORCE_CLOSE",
-                    position_qty=0,
-                    option_mark_price=0.0,
-                    cash=cash,
-                    position_value=pos_value,
-                    equity=equity,
-                    drawdown_pct=(equity - equity_high) / equity_high if equity_high > 0 else 0.0,
-                ))
-            del open_trades[symbol]
-            if symbol in entry_bar_counts:
-                del entry_bar_counts[symbol]
+        t.close(
+            exit_time=ts,
+            exit_price=result.fill_price,
+            exit_underlying=exit_underlying,
+            exit_reason=order.reason,
+            holding_bars=holding_bars,
+            holding_minutes=int(holding_minutes),
+        )
+        trades.append(t)
+        del open_trades[symbol]
+        if symbol in entry_bar_counts:
+            del entry_bar_counts[symbol]

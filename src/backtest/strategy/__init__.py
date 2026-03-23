@@ -1,4 +1,4 @@
-from src.backtest.strategy.base import Action, ActionResult, BaseStrategy
+from src.backtest.strategy.base import BaseStrategy
 from src.backtest.strategy.put_buy import PutBuyConfig, PutBuyStrategy
 from src.backtest.strategy.filtered_put import FilteredPutConfig, FilteredPutStrategy
 from src.backtest.strategy.call_buy import CallBuyConfig, CallBuyStrategy

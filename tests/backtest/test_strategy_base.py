@@ -1,8 +1,10 @@
 """Tests for BaseStrategy ABC — 5 tests."""
 
 import pytest
+import pandas as pd
 
-from src.backtest.strategy.base import BaseStrategy, Action, ActionResult
+from src.backtest.strategy.base import BaseStrategy
+from src.backtest.types import Order, PortfolioState
 
 
 class TestBaseStrategyABC:
@@ -24,13 +26,18 @@ class TestBaseStrategyABC:
     def test_config_dict_is_abstract(self):
         assert "config_dict" in BaseStrategy.__abstractmethods__
 
-    # 5. reset and on_day_start are default no-ops
+    # 5. Expected abstract methods are exactly {on_bar, name, config_dict}
+    def test_abstract_methods_set(self):
+        expected = {"on_bar", "name", "config_dict"}
+        assert BaseStrategy.__abstractmethods__ == expected
+
+    # 6. reset and on_day_start are default no-ops
     def test_reset_and_on_day_start_default_noop(self):
         """Concrete subclass with minimal implementation can call reset/on_day_start without error."""
 
         class MinimalStrategy(BaseStrategy):
-            def on_bar(self, bar, position, session_minutes=390):
-                return ActionResult(Action.HOLD)
+            def on_bar(self, row: pd.Series, portfolio: PortfolioState, context: dict) -> list[Order]:
+                return []
 
             def name(self):
                 return "minimal"
