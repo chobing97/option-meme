@@ -14,7 +14,8 @@ import streamlit as st
 from dashboard.components.charts import make_candlestick, make_option_candlestick
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    market_selector, reload_button, symbol_selector, timeframe_selector,
+    load_from_query_params, market_selector, reload_button, symbol_selector,
+    sync_to_query_params, timeframe_selector,
 )
 from dashboard.data_loader import (
     get_raw_date_range, get_raw_symbols, get_raw_trading_dates, get_stock_name_map,
@@ -25,6 +26,11 @@ st.set_page_config(page_title="Raw Data", layout="wide")
 st.title("Phase 0: Raw OHLCV Data")
 
 kb_dir = kb_nav_read()
+
+# ── Query param persistence ──────────────────────────────
+load_from_query_params("timeframe", cast=str)
+load_from_query_params("raw_market", cast=str)
+load_from_query_params("raw_symbol", cast=str)
 
 # ── Sidebar filters ───────────────────────────────────────
 
@@ -119,3 +125,5 @@ if option_df is not None and not option_df.empty:
     contract_info = option_df.attrs.get("contract_info", "Option")
     with st.expander(f"Option Data Table — {contract_info} ({selected_date})"):
         st.dataframe(option_df, use_container_width=True, height=400)
+
+sync_to_query_params(timeframe=timeframe, raw_market=market, raw_symbol=symbol)

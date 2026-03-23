@@ -155,6 +155,7 @@ def get_raw_trading_dates(market: str, symbol: str, timeframe: str = "1m") -> li
 
 
 @st.cache_data(show_spinner="Loading raw bars...")
+@st.cache_data(show_spinner=False)
 def load_raw_bars(market: str, symbol: str, start_date: str | None = None, end_date: str | None = None, timeframe: str = "1m") -> pd.DataFrame:
     if timeframe == "5m":
         # For 5m, load from raw-generated directory

@@ -13,7 +13,7 @@ import streamlit as st
 st.set_page_config(page_title="Option-Meme Dashboard", layout="wide")
 
 from config.variants import get_label_configs, get_model_configs
-from dashboard.components.filters import timeframe_selector
+from dashboard.components.filters import load_from_query_params, sync_to_query_params, timeframe_selector
 from dashboard.components.metrics import pipeline_status_card
 from dashboard.data_loader import (
     get_featured_summary,
@@ -27,6 +27,7 @@ st.markdown("4-stage pipeline overview: **Collector** -> **Labeler** -> **Featur
 
 st.divider()
 
+load_from_query_params("timeframe", cast=str)
 timeframe = timeframe_selector(key="timeframe")
 
 label_keys = sorted(get_label_configs(timeframe).keys())
@@ -45,5 +46,7 @@ for market in ["us", "kr"]:
 
             pipeline_status_card(raw, labeled, featured, models)
     st.divider()
+
+sync_to_query_params(timeframe=timeframe)
 
 st.caption("Use the sidebar pages to explore each pipeline stage in detail.")

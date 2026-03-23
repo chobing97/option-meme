@@ -16,13 +16,19 @@ from dashboard.components.charts import (
     make_violin_by_label,
 )
 from dashboard.components.filters import (
-    feature_selector, label_config_selector, market_selector, model_config_selector,
-    reload_button, timeframe_selector,
+    feature_selector, label_config_selector, load_from_query_params, market_selector,
+    model_config_selector, reload_button, sync_to_query_params, timeframe_selector,
 )
 from dashboard.data_loader import get_feature_column_list, get_featured_summary, load_featured
 
 st.set_page_config(page_title="Features", layout="wide")
 st.title("Phase 2: Feature Analysis")
+
+# ── Query param persistence ──────────────────────────────
+load_from_query_params("timeframe", cast=str)
+load_from_query_params("feat_market", cast=str)
+load_from_query_params("feat_lc", cast=str)
+load_from_query_params("feat_mc", cast=str)
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -89,3 +95,5 @@ st.subheader("Feature by Label")
 if "label" in df.columns and valid_cols:
     violin_feat = st.selectbox("Feature", valid_cols, key="violin_feat")
     st.plotly_chart(make_violin_by_label(df, violin_feat), use_container_width=True)
+
+sync_to_query_params(timeframe=timeframe, feat_market=market, feat_lc=lc, feat_mc=mc)

@@ -16,8 +16,8 @@ from dashboard.components.charts import (
     make_time_error_chart,
 )
 from dashboard.components.filters import (
-    label_config_selector, market_selector, model_config_selector, reload_button,
-    timeframe_selector,
+    label_config_selector, load_from_query_params, market_selector,
+    model_config_selector, reload_button, sync_to_query_params, timeframe_selector,
 )
 from dashboard.components.metrics import backtest_summary
 from dashboard.data_loader import (
@@ -29,6 +29,12 @@ from dashboard.data_loader import (
 
 st.set_page_config(page_title="Model Performance", layout="wide")
 st.title("Phase 3: Model Performance")
+
+# ── Query param persistence ──────────────────────────────
+load_from_query_params("timeframe", cast=str)
+load_from_query_params("model_market", cast=str)
+load_from_query_params("model_lc", cast=str)
+load_from_query_params("model_mc", cast=str)
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -145,3 +151,5 @@ for col, target_label, label_name in [(fi_col1, 1, "Peak"), (fi_col2, 2, "Trough
             st.plotly_chart(make_feature_importance_bar(imp_df), use_container_width=True)
         else:
             st.info(f"No importance data for {label_name}")
+
+sync_to_query_params(timeframe=timeframe, model_market=market, model_lc=lc, model_mc=mc)

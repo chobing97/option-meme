@@ -16,8 +16,9 @@ from dashboard.components.charts import (
 )
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    label_config_selector, market_selector, model_config_selector, model_type_selector,
-    reload_button, symbol_selector, timeframe_selector,
+    label_config_selector, load_from_query_params, market_selector,
+    model_config_selector, model_type_selector, reload_button, symbol_selector,
+    sync_to_query_params, timeframe_selector,
 )
 from dashboard.data_loader import (
     find_configs_for_model_type, get_available_model_types, get_stock_name_map,
@@ -28,6 +29,14 @@ st.set_page_config(page_title="Predictions", layout="wide")
 st.title("Phase 5: Predictions")
 
 kb_dir = kb_nav_read()
+
+# ── Query param persistence ──────────────────────────────
+load_from_query_params("timeframe", cast=str)
+load_from_query_params("pred_market", cast=str)
+load_from_query_params("pred_mt", cast=str)
+load_from_query_params("pred_lc", cast=str)
+load_from_query_params("pred_mc", cast=str)
+load_from_query_params("pred_symbol", cast=str)
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -157,3 +166,8 @@ else:
 
 with st.expander("Prediction Data Table"):
     st.dataframe(sym_pred, use_container_width=True, height=400)
+
+sync_to_query_params(
+    timeframe=timeframe, pred_market=market, pred_mt=mt,
+    pred_lc=lc, pred_mc=mc, pred_symbol=symbol,
+)

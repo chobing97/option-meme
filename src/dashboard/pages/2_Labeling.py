@@ -12,8 +12,8 @@ import streamlit as st
 from dashboard.components.charts import make_editable_candlestick, make_label_distribution
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
-    label_config_selector, market_selector, reload_button, symbol_selector,
-    timeframe_selector,
+    label_config_selector, load_from_query_params, market_selector, reload_button,
+    symbol_selector, sync_to_query_params, timeframe_selector,
 )
 from dashboard.data_loader import (
     get_labeled_date_range, get_labeled_symbol_stats, get_labeled_symbols,
@@ -24,6 +24,12 @@ st.set_page_config(page_title="Labels", layout="wide")
 st.title("Phase 1: Peak/Trough Labels")
 
 kb_dir = kb_nav_read()
+
+# ── Query param persistence ──────────────────────────────
+load_from_query_params("timeframe", cast=str)
+load_from_query_params("label_market", cast=str)
+load_from_query_params("label_lc", cast=str)
+load_from_query_params("label_symbol", cast=str)
 
 # ── Sidebar ───────────────────────────────────────────────
 
@@ -120,3 +126,5 @@ with st.expander("Labeled Data Table"):
         st.dataframe(day_df, use_container_width=True, height=400)
     else:
         st.info("No data.")
+
+sync_to_query_params(timeframe=timeframe, label_market=market, label_lc=label_config, label_symbol=symbol)

@@ -125,6 +125,36 @@ _kb_nav_func = components.declare_component(
 )
 
 
+def load_from_query_params(key: str, default=None, cast=str):
+    """Load a value from URL query params into session_state before widget creation.
+
+    Only sets session_state if:
+    - key is NOT already in session_state (don't override user interaction)
+    - key IS in query_params (URL has the value)
+
+    Args:
+        key: session_state key (must match the widget key)
+        default: not used directly, just for documentation
+        cast: type conversion function (str, int, float)
+    """
+    if key not in st.session_state and key in st.query_params:
+        raw = st.query_params[key]
+        try:
+            st.session_state[key] = cast(raw)
+        except (ValueError, TypeError):
+            pass
+
+def sync_to_query_params(**kwargs):
+    """Write current widget values to URL query params.
+
+    Call at the end of the page after all widgets are rendered.
+    Values are converted to strings for URL encoding.
+    """
+    for key, value in kwargs.items():
+        if value is not None:
+            st.query_params[key] = str(value)
+
+
 def kb_nav_read() -> str | None:
     """Render keyboard nav component, return direction ('left'/'right'/'up'/'down') or None."""
     nav = _kb_nav_func(key="__kb_nav", default=None)
