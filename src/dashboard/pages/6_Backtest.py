@@ -39,10 +39,6 @@ from dashboard.data_loader import (
 st.set_page_config(page_title="Backtest", layout="wide")
 st.title("Phase 6: Backtest")
 
-# ── Keyboard navigation ───────────────────────────────────
-
-kb_dir = kb_nav_read()
-
 # ── Query param persistence ──────────────────────────────
 load_from_query_params("timeframe", cast=str)
 load_from_query_params("bt_symbol", cast=str)
@@ -253,8 +249,10 @@ else:
 # ── 3. Daily Chart + Trade History (fragment for fast date nav) ──
 
 @st.fragment
-def _daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe, kb_dir):
+def _daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe):
     """Isolated fragment: only this re-runs when the date slider changes."""
+    # Keyboard nav component lives inside fragment so ←→ only re-runs this section
+    kb_dir = kb_nav_read()
     st.subheader("Daily Chart")
 
     if equity_df.empty or trades_df.empty:
@@ -496,7 +494,7 @@ def _daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe,
 
 
 # Call the fragment
-_daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe, kb_dir)
+_daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe)
 
 
 # ── 5. Distribution Analysis ─────────────────────────────
