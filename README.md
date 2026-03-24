@@ -15,6 +15,7 @@
 | **Phase 3.5** | `ensemble` | LSTM 캘리브레이션 + GBM/LSTM 가중 앙상블 (US) |
 | **Phase 4** | `batch_predict` | 전 종목 배치 예측 & parquet 저장 |
 | **Phase 5** | `trading` | 풋옵션 시그널 생성 & 매매 엔진 (Mock/Historical/실전) |
+| **Phase 5.5** | `backtest` | 다중 전략 백테스트 엔진 (Strategy/Executor/MarketData 아키텍처) |
 | **Phase 6** | `dashboard` | Streamlit 대시보드 (Raw Data, Labels, Features, Model, Predictions, Backtest) |
 
 ## 기술 스택
@@ -93,6 +94,16 @@ export DATABENTO_API_KEY="your-api-key"
 # Phase 5: 트레이딩 (백테스트)
 ./optionmeme trade --market us --broker historical  # 실제 옵션 OHLCV 백테스트
 ./optionmeme trade --market us --broker mock         # B-S 이론가 백테스트
+
+# Phase 5.5: 백테스트 (새 엔진)
+./optionmeme backtest --market us --symbol TSLA --threshold 0.3
+./optionmeme backtest --market us --symbol TSLA --strategy filtered_put --tp 0.15 --sl -0.03
+./optionmeme backtest --list-symbols --market us
+
+# 백테스트 그리드 서치
+./optionmeme backtest_grid --market us --symbol TSLA
+./optionmeme backtest_grid --market us --symbol TSLA --strategy filtered_put \
+  --threshold-grid 0.2,0.3,0.4 --tp-grid 0.05,0.10,0.15 --sl-grid -0.03,-0.05,-0.10
 ```
 
 ### Databento 주식 수집 (고품질 데이터)
@@ -137,7 +148,7 @@ python -m src.collector.databento.build_us_options_ohlcv --symbol TSLA --dry-run
 | **Features** | 피처 분포, 상관관계 히트맵 |
 | **Model Performance** | GBM/LSTM/Ensemble PR-AUC 비교 |
 | **Predictions** | 예측 결과 캔들차트 + 확률 막대 그래프 |
-| **Backtest** | 4-panel 차트: 주가 캔들 + 옵션 캔들 + 확률 + 에쿼티/드로다운 |
+| **Backtest** | 4-panel 차트: 주가 캔들 + 옵션 캔들 + 확률 + 에쿼티/드로다운. `@st.fragment` 최적화로 날짜 전환 즉시 반영 |
 
 ### 테스트
 
@@ -196,21 +207,36 @@ option-meme/
 │   ├── inference/            # Phase 4: 추론
 │   │   └── predict.py        # 단일 종목 / 배치 예측
 │   │
-│   └── trading/              # Phase 5: 트레이딩
-│       ├── engine.py         # 멀티 심볼 트레이딩 루프 (시그널 → 주문)
-│       ├── signal_detector.py # 바 누적 + 피처 → 모델 추론 → 시그널
-│       ├── option_pricer.py  # Black-Scholes 풋옵션 가격 계산
-│       ├── trade_db.py       # 거래 이력 SQLite DB
-│       ├── broker/           # 주문 실행 (Historical/Mock/실전 연동)
-│       │   ├── base.py       # Broker ABC, Order, Signal 타입
-│       │   ├── historical_broker.py # 실제 옵션 OHLCV 백테스팅 브로커
-│       │   └── mock_broker.py # B-S 이론가 백테스팅용 모의 브로커
-│       ├── datafeed/         # 실시간 데이터 피드
-│       │   ├── base.py       # DataFeed ABC
-│       │   └── mock_feed.py  # 히스토리 데이터 기반 모의 피드
-│       └── notifier/         # 매매 알림
-│           ├── base.py       # Notifier ABC, TradeEvent
-│           └── console.py    # 콘솔 출력 노티파이어
+│   ├── trading/              # Phase 5: 트레이딩
+│   │   ├── engine.py         # 멀티 심볼 트레이딩 루프 (시그널 → 주문)
+│   │   ├── signal_detector.py # 바 누적 + 피처 → 모델 추론 → 시그널
+│   │   ├── option_pricer.py  # Black-Scholes 풋옵션 가격 계산
+│   │   ├── trade_db.py       # 거래 이력 SQLite DB
+│   │   ├── broker/           # 주문 실행 (Historical/Mock/실전 연동)
+│   │   │   ├── base.py       # Broker ABC, Order, Signal 타입
+│   │   │   ├── historical_broker.py # 실제 옵션 OHLCV 백테스팅 브로커
+│   │   │   └── mock_broker.py # B-S 이론가 백테스팅용 모의 브로커
+│   │   ├── datafeed/         # 실시간 데이터 피드
+│   │   │   ├── base.py       # DataFeed ABC
+│   │   │   └── mock_feed.py  # 히스토리 데이터 기반 모의 피드
+│   │   └── notifier/         # 매매 알림
+│   │       ├── base.py       # Notifier ABC, TradeEvent
+│   │       └── console.py    # 콘솔 출력 노티파이어
+│   │
+│   └── backtest/             # Phase 5.5: 백테스트 엔진
+│       ├── types.py          # Side, Order, OrderResult, PortfolioState, Quote
+│       ├── market_data.py    # MarketData ABC + BacktestMarketData (시세 조회)
+│       ├── engine.py         # BacktestEngine — 순수 루프 (Strategy + Executor 조합)
+│       ├── result.py         # Trade, BarSnapshot, SimulationResult
+│       ├── analyzer.py       # 성과 지표 계산 (승률, Sharpe, 최대 DD 등)
+│       ├── strategy/         # 매매 전략 (다형성)
+│       │   ├── base.py       # BaseStrategy ABC (on_bar, on_day_end, on_data_end)
+│       │   ├── put_buy.py    # PutBuyStrategy — 피크→풋 매수, 트로프→매도
+│       │   ├── filtered_put.py # FilteredPutStrategy — 쿨다운/최소보유/일일한도 필터
+│       │   └── call_buy.py   # CallBuyStrategy — 트로프→콜 매수, 피크→매도
+│       └── executor/         # 주문 실행
+│           ├── base.py       # Executor ABC (execute, get_portfolio_state, update_marks)
+│           └── backtest.py   # BacktestExecutor — 실제 옵션 OHLCV 기반 체결
 │
 ├── scripts/                  # 유틸리티 & 테스트 스크립트
 │   ├── collect_opra_puts.py  # OPRA 풋옵션 심볼 탐색 & 비용 산정
@@ -237,7 +263,8 @@ option-meme/
 │   ├── features/             # 피처 테스트
 │   ├── model/                # 모델 테스트
 │   ├── inference/            # 추론 테스트
-│   └── trading/              # 트레이딩 테스트
+│   ├── trading/              # 트레이딩 테스트
+│   └── backtest/             # 백테스트 모듈 테스트
 │
 └── data/
     ├── raw/
@@ -264,16 +291,16 @@ option-meme/
 ## 데이터 흐름
 
 ```
-┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐    ┌──────────┐
-│ Phase 0  │    │ Phase 1  │    │ Phase 2  │    │ Phase 3  │    │  Phase 4     │    │ Phase 5  │    │ Phase 6  │
-│Collector │───▶│ Labeler  │───▶│ Features │───▶│  Model   │───▶│batch_predict │───▶│ Trading  │───▶│Dashboard │
-└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────────┘    └──────────┘    └──────────┘
-      │              │               │               │                │                  │               │
- Databento +     L1/L2 변형      M1~M4 변형       GBM+LSTM         전 종목           풋옵션         시각화 &
- yfinance +     prominence/     lookback/fill    peak/trough       배치 예측        시그널+매매     백테스트
- tvDatafeed      width              │               │                │                  │            분석
-      ▼              ▼               ▼               ▼                ▼                  ▼
- stock/*.parquet labeled/L*/   featured/L*/M*/  models/L*/M*/  predictions/{type}/  backtests/
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐    ┌───────────┐    ┌──────────┐
+│ Phase 0  │    │ Phase 1  │    │ Phase 2  │    │ Phase 3  │    │  Phase 4     │    │ Phase 5  │    │ Phase 5.5 │    │ Phase 6  │
+│Collector │───▶│ Labeler  │───▶│ Features │───▶│  Model   │───▶│batch_predict │───▶│ Trading  │    │ Backtest  │───▶│Dashboard │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────────┘    └──────────┘    └───────────┘    └──────────┘
+      │              │               │               │                │                  │               │               │
+ Databento +     L1/L2 변형      M1~M4 변형       GBM+LSTM         전 종목           풋옵션       다중 전략       시각화 &
+ yfinance +     prominence/     lookback/fill    peak/trough       배치 예측        시그널+매매   그리드서치      분석
+ tvDatafeed      width              │               │                │                  │               │
+      ▼              ▼               ▼               ▼                ▼                  ▼               ▼
+ stock/*.parquet labeled/L*/   featured/L*/M*/  models/L*/M*/  predictions/{type}/  backtests/   backtest results
  options/*.parquet
 ```
 
@@ -671,6 +698,71 @@ Lookback 적용 시 각 base feature에 대해 lag1~lagN 파생 (M1/M2: 450 lag,
 - 무위험이자율: 3.5%
 - 슬리피지: 0.5%
 - 최소 잔존일: 7일
+
+## 백테스트 엔진 (Phase 5.5)
+
+실제 옵션 OHLCV 데이터를 사용하는 이벤트 기반 백테스트 시스템. **Engine은 순수 루프**, **Strategy가 매매 의사결정 전권**, **Executor는 순수 브로커**(현금/포지션 관리)라는 역할 분리 원칙으로 설계.
+
+### 아키텍처
+
+```
+MarketData (시세 조회)
+    ↑ 참조              ↑ 참조
+Strategy ──Order──▶ Executor
+    ↑ row, portfolio        │
+    │                       │ OrderResult
+Engine (순수 루프) ◀────────┘
+    │
+    ▼
+SimulationResult (trades, snapshots)
+```
+
+| 컴포넌트 | 역할 | 주요 메서드 |
+|---------|------|-----------|
+| **MarketData** | 시세 조회 (읽기 전용) | `get_stock_quote()`, `get_option_chain()`, `get_option_quote()` |
+| **Strategy** | 매매 판단 → `list[Order]` 반환 | `on_bar()`, `on_day_end()`, `on_data_end()` |
+| **Executor** | 주문 체결, 현금/포지션 관리 | `execute()`, `get_portfolio_state()`, `update_marks()` |
+| **Engine** | DataFrame 순회, 날짜 변경 감지 | `run()`, `run_grid()` |
+| **Analyzer** | 성과 지표 계산 | 승률, Sharpe, 최대 DD, 평균 PnL 등 |
+
+### 매매 전략
+
+| 전략 | 진입 | 청산 | 특수 파라미터 |
+|------|------|------|-------------|
+| **put_buy** | PEAK → ATM 풋 매수 | TROUGH / TP / SL / 강제청산 | — |
+| **filtered_put** | PEAK + 필터 조건 → ATM 풋 매수 | 동일 | `min_holding_minutes`, `cooldown_minutes`, `max_trades_per_day`, `min_prob_gap` |
+| **call_buy** | TROUGH → ATM 콜 매수 | PEAK / TP / SL / 강제청산 | `min_holding_minutes`, `cooldown_minutes`, `max_trades_per_day` |
+
+### CLI 사용법
+
+```bash
+# 단일 백테스트
+./optionmeme backtest --market us --symbol TSLA --threshold 0.3 --strategy put_buy
+
+# 전략별 파라미터 지정
+./optionmeme backtest --market us --symbol TSLA --strategy filtered_put \
+  --tp 0.15 --sl -0.03 --min-holding 30 --cooldown 30 --max-trades 3
+
+# 옵션 데이터가 있는 종목 목록
+./optionmeme backtest --list-symbols --market us
+
+# 그리드 서치 (파라미터 조합 자동 탐색)
+./optionmeme backtest_grid --market us --symbol TSLA --strategy put_buy \
+  --threshold-grid 0.2,0.3,0.4 --tp-grid 0.05,0.10,0.15 --sl-grid -0.03,-0.05,-0.10
+```
+
+### 알려진 데이터 누락 (TSLA 옵션 OHLCV)
+
+Databento OPRA 옵션 데이터 수집 시 아래 거래일의 OHLCV가 누락됨. `contracts.parquet`에는 활성 계약이 존재하나 분봉 가격 데이터가 없음. 대시보드에서 해당 날짜의 옵션가 차트가 표시되지 않는 원인.
+
+```
+2025-04-24 (Thu)    2025-06-05 (Thu)    2025-10-10 (Fri)
+2025-04-25 (Fri)    2025-06-06 (Fri)    2025-11-07 (Fri)
+2025-05-14 (Wed)    2025-06-27 (Fri)    2025-11-13 (Thu)
+2025-05-16 (Fri)    2025-09-12 (Fri)    2025-11-14 (Fri)
+```
+
+12일 중 10일이 목/금요일로, 주간 옵션 만기일 전후에 집중. 재수집 필요.
 
 ## 주요 설정
 
