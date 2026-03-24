@@ -155,7 +155,6 @@ def get_raw_trading_dates(market: str, symbol: str, timeframe: str = "1m") -> li
 
 
 @st.cache_data(show_spinner="Loading raw bars...")
-@st.cache_data(show_spinner=False)
 def load_raw_bars(market: str, symbol: str, start_date: str | None = None, end_date: str | None = None, timeframe: str = "1m") -> pd.DataFrame:
     if timeframe == "5m":
         # For 5m, load from raw-generated directory
@@ -918,6 +917,7 @@ def get_model_status(market: str, label_config: str, model_config: str, timefram
 
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=1800)
 def get_backtest_symbols(market: str = "us") -> list[str]:
     """List symbols that have options data for backtesting."""
     options_dir = RAW_OPTIONS_DIR / market
@@ -944,6 +944,7 @@ def load_prediction_for_backtest(
     return result
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
 def find_backtest_defaults(
     market: str = "us",
     model_type: str = "gbm",

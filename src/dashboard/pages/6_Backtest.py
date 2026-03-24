@@ -249,13 +249,17 @@ else:
     st.plotly_chart(fig_eq, use_container_width=True)
 
 
-# ── 3. Daily Chart ───────────────────────────────────────
+# ── 3. Daily Chart + Trade History (fragment for fast date nav) ──
 
-st.subheader("Daily Chart")
+@st.fragment
+def _daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe, kb_dir):
+    """Isolated fragment: only this re-runs when the date slider changes."""
+    st.subheader("Daily Chart")
 
-if equity_df.empty or trades_df.empty:
-    st.info("No trade data available for daily chart.")
-else:
+    if equity_df.empty or trades_df.empty:
+        st.info("No trade data available for daily chart.")
+        return
+
     eq = equity_df.copy()
     eq["timestamp"] = pd.to_datetime(eq["timestamp"])
     eq["date"] = eq["timestamp"].dt.date
@@ -263,233 +267,225 @@ else:
 
     if not available_dates:
         st.info("No dates available.")
-    else:
-        td = trades_df.copy()
-        td["entry_time"] = pd.to_datetime(td["entry_time"])
-        trade_dates = sorted(td["entry_time"].dt.date.unique())
+        return
 
-        # Date slider with keyboard navigation (←→)
-        kb_nav_apply_date(kb_dir, available_dates, "bt_daily_date")
-        default_date = trade_dates[0] if trade_dates and trade_dates[0] in available_dates else available_dates[-1]
-        selected_date = st.select_slider(
-            "Date", options=available_dates, value=default_date, key="bt_daily_date"
-        )
+    td = trades_df.copy()
+    td["entry_time"] = pd.to_datetime(td["entry_time"])
+    trade_dates = sorted(td["entry_time"].dt.date.unique())
 
-        # Compute session time range
-        from datetime import datetime as _dt
-        _session_start = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("09:30", "%H:%M").time()))
-        _session_end = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("16:00", "%H:%M").time()))
+    # Date slider with keyboard navigation (←→)
+    kb_nav_apply_date(kb_dir, available_dates, "bt_daily_date")
+    default_date = trade_dates[0] if trade_dates and trade_dates[0] in available_dates else available_dates[-1]
+    selected_date = st.select_slider(
+        "Date", options=available_dates, value=default_date, key="bt_daily_date"
+    )
 
-        # Load stock data
-        next_day = selected_date + timedelta(days=1)
-        stock_bars = load_raw_bars("us", bt_symbol, str(selected_date), str(next_day), timeframe)
-        day_eq = eq[eq["date"] == selected_date]
-        day_trades = td[td["entry_time"].dt.date == selected_date]
+    # Compute session time range
+    from datetime import datetime as _dt
+    _session_start = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("09:30", "%H:%M").time()))
+    _session_end = pd.Timestamp(_dt.combine(selected_date, _dt.strptime("16:00", "%H:%M").time()))
 
-        # Determine tz for axis range
-        _tz_str = None
-        if not stock_bars.empty:
-            stock_bars["datetime"] = pd.to_datetime(stock_bars["datetime"])
-            if stock_bars["datetime"].dt.tz is not None:
-                _tz_str = str(stock_bars["datetime"].dt.tz)
-                _time = stock_bars["datetime"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
-            else:
-                _time = stock_bars["datetime"].dt.strftime("%H:%M")
-            stock_bars = stock_bars[(_time >= "09:30") & (_time < "16:00")]
+    # Load stock data
+    next_day = selected_date + timedelta(days=1)
+    stock_bars = load_raw_bars("us", bt_symbol, str(selected_date), str(next_day), timeframe)
+    day_eq = eq[eq["date"] == selected_date]
+    day_trades = td[td["entry_time"].dt.date == selected_date]
 
-        if _tz_str:
-            _session_start = _session_start.tz_localize(_tz_str)
-            _session_end = _session_end.tz_localize(_tz_str)
+    # Determine tz for axis range
+    _tz_str = None
+    if not stock_bars.empty:
+        stock_bars["datetime"] = pd.to_datetime(stock_bars["datetime"])
+        if stock_bars["datetime"].dt.tz is not None:
+            _tz_str = str(stock_bars["datetime"].dt.tz)
+            _time = stock_bars["datetime"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
+        else:
+            _time = stock_bars["datetime"].dt.strftime("%H:%M")
+        stock_bars = stock_bars[(_time >= "09:30") & (_time < "16:00")]
 
-        # Determine number of rows: stock(price+prob) + option if available
-        has_option = False
-        option_ohlcv = pd.DataFrame()
-        contract_info = ""
-        if not day_trades.empty:
-            trade_strike = day_trades["entry_strike"].iloc[0]
+    if _tz_str:
+        _session_start = _session_start.tz_localize(_tz_str)
+        _session_end = _session_end.tz_localize(_tz_str)
+
+    # Determine number of rows: stock(price+prob) + option if available
+    has_option = False
+    option_ohlcv = pd.DataFrame()
+    contract_info = ""
+    if not day_trades.empty:
+        # Try each unique strike until we find one with OHLCV data
+        for trade_strike in day_trades["entry_strike"].dropna().unique():
             option_ohlcv = load_options_ohlcv_by_strike("us", bt_symbol, str(selected_date), trade_strike)
             if not option_ohlcv.empty:
                 option_ohlcv["datetime"] = pd.to_datetime(option_ohlcv["datetime"])
                 contract_info = option_ohlcv.attrs.get("contract_info", f"Put K={trade_strike:.0f}")
-                has_option = True
+            has_option = True
 
-        if has_option:
-            fig_daily = make_subplots(
-                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                row_heights=[0.45, 0.25, 0.30],
-                subplot_titles=[f"{bt_symbol} Stock — {selected_date}", "Peak / Trough Probability", contract_info],
-            )
-        else:
-            fig_daily = make_subplots(
-                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                row_heights=[0.65, 0.35],
-                subplot_titles=[f"{bt_symbol} Stock — {selected_date}", "Peak / Trough Probability"],
-            )
-
-        # Row 1: Stock candlestick + BUY/SELL markers
-        if not stock_bars.empty:
-            fig_daily.add_trace(go.Candlestick(
-                x=stock_bars["datetime"],
-                open=stock_bars["open"], high=stock_bars["high"],
-                low=stock_bars["low"], close=stock_bars["close"],
-                name="Stock", showlegend=False,
-            ), row=1, col=1)
-
-        if not day_eq.empty and not stock_bars.empty:
-            # Build a lookup from stock_bars for candle high/low by tz-naive minute
-            _sb = stock_bars.copy()
-            _sb["_minute"] = _sb["datetime"].dt.tz_localize(None) if _sb["datetime"].dt.tz is not None else _sb["datetime"]
-            _sb["_minute"] = _sb["_minute"].dt.floor("min")
-            _high_map = dict(zip(_sb["_minute"], _sb["high"]))
-            _low_map = dict(zip(_sb["_minute"], _sb["low"]))
-
-            _price_range = stock_bars["high"].max() - stock_bars["low"].min()
-            _offset = max(_price_range * 0.03, 0.3)
-
-            day_buys = day_eq[day_eq["action"] == "BUY"]
-            day_sells = day_eq[day_eq["action"] == "SELL"]
-
-            if not day_buys.empty:
-                # Look up candle high for each buy timestamp
-                _buy_ts_naive = pd.to_datetime(day_buys["timestamp"]).dt.tz_localize(None).dt.floor("min")
-                buy_y = _buy_ts_naive.map(_high_map).fillna(pd.Series(day_buys["underlying_close"].values, index=_buy_ts_naive.index))
-                fig_daily.add_trace(go.Scatter(
-                    x=day_buys["timestamp"],
-                    y=buy_y + _offset,
-                    mode="markers+text", name="BUY",
-                    marker=dict(symbol="triangle-up", size=14, color="green"),
-                    text=["B"] * len(day_buys), textposition="top center",
-                    textfont=dict(size=8, color="green"),
-                ), row=1, col=1)
-
-            if not day_sells.empty:
-                # Look up candle low for each sell timestamp
-                _sell_ts_naive = pd.to_datetime(day_sells["timestamp"]).dt.tz_localize(None).dt.floor("min")
-                sell_y = _sell_ts_naive.map(_low_map).fillna(pd.Series(day_sells["underlying_close"].values, index=_sell_ts_naive.index))
-                fig_daily.add_trace(go.Scatter(
-                    x=day_sells["timestamp"],
-                    y=sell_y - _offset,
-                    mode="markers+text", name="SELL",
-                    marker=dict(symbol="triangle-down", size=14, color="red"),
-                    text=["S"] * len(day_sells), textposition="bottom center",
-                    textfont=dict(size=8, color="red"),
-                ), row=1, col=1)
-
-        # Row 2: Probability overlay (only if data has prediction columns with nonzero values)
-        has_prob = (not day_eq.empty
-                    and "peak_prob" in day_eq.columns
-                    and day_eq["peak_prob"].sum() > 0)
-        if has_prob:
-            fig_daily.add_trace(go.Scatter(
-                x=day_eq["timestamp"], y=day_eq["peak_prob"],
-                mode="lines", name="Peak Prob",
-                line=dict(color="orange", width=1),
-            ), row=2, col=1)
-            fig_daily.add_trace(go.Scatter(
-                x=day_eq["timestamp"], y=day_eq["trough_prob"],
-                mode="lines", name="Trough Prob",
-                line=dict(color="blue", width=1),
-            ), row=2, col=1)
-            fig_daily.add_hline(y=threshold, line_dash="dash", line_color="gray", row=2, col=1)
-
-        # Row 3: Option candlestick (no trade markers — view price action only)
-        if has_option:
-            fig_daily.add_trace(go.Candlestick(
-                x=option_ohlcv["datetime"],
-                open=option_ohlcv["open"], high=option_ohlcv["high"],
-                low=option_ohlcv["low"], close=option_ohlcv["close"],
-                name="Option", showlegend=False,
-            ), row=3, col=1)
-
-        # Apply session time range to all x-axes and remove time gaps
-        n_rows = 3 if has_option else 2
-        xaxis_updates = {}
-        for i in range(1, n_rows + 1):
-            suffix = "" if i == 1 else str(i)
-            xaxis_updates[f"xaxis{suffix}_range"] = [_session_start, _session_end]
-            xaxis_updates[f"xaxis{suffix}_rangeslider_visible"] = False
-
-        # Build rangebreaks to hide pre/post market gaps (prevents fade effect)
-        _rangebreaks = [
-            dict(bounds=[16, 9.5], pattern="hour"),  # hide after 16:00 and before 09:30
-        ]
-
-        fig_daily.update_layout(
-            height=700 if has_option else 500,
-            margin=dict(l=40, r=20, t=30, b=30),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            **xaxis_updates,
+    if has_option:
+        fig_daily = make_subplots(
+            rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+            row_heights=[0.45, 0.25, 0.30],
+            subplot_titles=[f"{bt_symbol} Stock — {selected_date}", "Peak / Trough Probability", contract_info],
+        )
+    else:
+        fig_daily = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+            row_heights=[0.65, 0.35],
+            subplot_titles=[f"{bt_symbol} Stock — {selected_date}", "Peak / Trough Probability"],
         )
 
-        # Apply rangebreaks to all x-axes
-        for i in range(1, n_rows + 1):
-            suffix = "" if i == 1 else str(i)
-            fig_daily.update_layout(**{f"xaxis{suffix}_rangebreaks": _rangebreaks})
-        st.plotly_chart(fig_daily, use_container_width=True)
+    # Row 1: Stock candlestick + BUY/SELL markers
+    if not stock_bars.empty:
+        fig_daily.add_trace(go.Candlestick(
+            x=stock_bars["datetime"],
+            open=stock_bars["open"], high=stock_bars["high"],
+            low=stock_bars["low"], close=stock_bars["close"],
+            name="Stock", showlegend=False,
+        ), row=1, col=1)
 
-        if stock_bars.empty:
-            st.info(f"No stock data for {selected_date}")
+    if not day_eq.empty and not stock_bars.empty:
+        # Build a lookup from stock_bars for candle high/low by tz-naive minute
+        _sb = stock_bars.copy()
+        _sb["_minute"] = _sb["datetime"].dt.tz_localize(None) if _sb["datetime"].dt.tz is not None else _sb["datetime"]
+        _sb["_minute"] = _sb["_minute"].dt.floor("min")
+        _high_map = dict(zip(_sb["_minute"], _sb["high"]))
+        _low_map = dict(zip(_sb["_minute"], _sb["low"]))
 
+        _price_range = stock_bars["high"].max() - stock_bars["low"].min()
+        _offset = max(_price_range * 0.03, 0.3)
 
-# ── 4. Trade History Table ───────────────────────────────
+        day_buys = day_eq[day_eq["action"] == "BUY"]
+        day_sells = day_eq[day_eq["action"] == "SELL"]
 
-st.subheader(f"Trade History — {selected_date}" if "selected_date" in dir() else "Trade History")
+        if not day_buys.empty:
+            _buy_ts_naive = pd.to_datetime(day_buys["timestamp"]).dt.tz_localize(None).dt.floor("min")
+            buy_y = _buy_ts_naive.map(_high_map).fillna(pd.Series(day_buys["underlying_close"].values, index=_buy_ts_naive.index))
+            fig_daily.add_trace(go.Scatter(
+                x=day_buys["timestamp"],
+                y=buy_y + _offset,
+                mode="markers+text", name="BUY",
+                marker=dict(symbol="triangle-up", size=14, color="green"),
+                text=["B"] * len(day_buys), textposition="top center",
+                textfont=dict(size=8, color="green"),
+            ), row=1, col=1)
 
-if trades_df.empty:
-    st.info("No trades executed.")
-else:
-    display = trades_df.copy()
-    display["entry_time"] = pd.to_datetime(display["entry_time"])
+        if not day_sells.empty:
+            _sell_ts_naive = pd.to_datetime(day_sells["timestamp"]).dt.tz_localize(None).dt.floor("min")
+            sell_y = _sell_ts_naive.map(_low_map).fillna(pd.Series(day_sells["underlying_close"].values, index=_sell_ts_naive.index))
+            fig_daily.add_trace(go.Scatter(
+                x=day_sells["timestamp"],
+                y=sell_y - _offset,
+                mode="markers+text", name="SELL",
+                marker=dict(symbol="triangle-down", size=14, color="red"),
+                text=["S"] * len(day_sells), textposition="bottom center",
+                textfont=dict(size=8, color="red"),
+            ), row=1, col=1)
 
-    # Filter to selected date (from Daily Chart)
-    if "selected_date" in dir() and selected_date is not None:
+    # Row 2: Probability overlay (only if data has prediction columns with nonzero values)
+    has_prob = (not day_eq.empty
+                and "peak_prob" in day_eq.columns
+                and day_eq["peak_prob"].sum() > 0)
+    if has_prob:
+        fig_daily.add_trace(go.Scatter(
+            x=day_eq["timestamp"], y=day_eq["peak_prob"],
+            mode="lines", name="Peak Prob",
+            line=dict(color="orange", width=1),
+        ), row=2, col=1)
+        fig_daily.add_trace(go.Scatter(
+            x=day_eq["timestamp"], y=day_eq["trough_prob"],
+            mode="lines", name="Trough Prob",
+            line=dict(color="blue", width=1),
+        ), row=2, col=1)
+        fig_daily.add_hline(y=threshold, line_dash="dash", line_color="gray", row=2, col=1)
+
+    # Row 3: Option candlestick (no trade markers — view price action only)
+    if has_option:
+        fig_daily.add_trace(go.Candlestick(
+            x=option_ohlcv["datetime"],
+            open=option_ohlcv["open"], high=option_ohlcv["high"],
+            low=option_ohlcv["low"], close=option_ohlcv["close"],
+            name="Option", showlegend=False,
+        ), row=3, col=1)
+
+    # Apply session time range to all x-axes and remove time gaps
+    n_rows = 3 if has_option else 2
+    xaxis_updates = {}
+    for i in range(1, n_rows + 1):
+        suffix = "" if i == 1 else str(i)
+        xaxis_updates[f"xaxis{suffix}_range"] = [_session_start, _session_end]
+        xaxis_updates[f"xaxis{suffix}_rangeslider_visible"] = False
+
+    _rangebreaks = [
+        dict(bounds=[16, 9.5], pattern="hour"),
+    ]
+
+    fig_daily.update_layout(
+        height=700 if has_option else 500,
+        margin=dict(l=40, r=20, t=30, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        **xaxis_updates,
+    )
+
+    for i in range(1, n_rows + 1):
+        suffix = "" if i == 1 else str(i)
+        fig_daily.update_layout(**{f"xaxis{suffix}_rangebreaks": _rangebreaks})
+    st.plotly_chart(fig_daily, use_container_width=True)
+
+    if stock_bars.empty:
+        st.info(f"No stock data for {selected_date}")
+
+    # ── Trade History Table (inside fragment — shares selected_date) ──
+    st.subheader(f"Trade History — {selected_date}")
+
+    if trades_df.empty:
+        st.info("No trades executed.")
+    else:
+        display = trades_df.copy()
+        display["entry_time"] = pd.to_datetime(display["entry_time"])
         display = display[display["entry_time"].dt.date == selected_date].copy()
 
-    if display.empty:
-        st.info(f"No trades on {selected_date}")
-    else:
-        display["#"] = range(1, len(display) + 1)
+        if display.empty:
+            st.info(f"No trades on {selected_date}")
+        else:
+            display["#"] = range(1, len(display) + 1)
+            display["entry_hm"] = display["entry_time"].dt.strftime("%H:%M")
+            if "exit_time" in display.columns:
+                display["exit_hm"] = pd.to_datetime(display["exit_time"]).dt.strftime("%H:%M")
+            if "entry_expiry" in display.columns:
+                display["expiry"] = pd.to_datetime(display["entry_expiry"]).dt.strftime("%m/%d")
 
-        # Format entry/exit times to show only HH:MM
-        display["entry_hm"] = display["entry_time"].dt.strftime("%H:%M")
-        if "exit_time" in display.columns:
-            display["exit_hm"] = pd.to_datetime(display["exit_time"]).dt.strftime("%H:%M")
+            display_cols = [
+                "#", "entry_hm", "entry_strike", "expiry",
+                "entry_underlying", "entry_price",
+                "exit_hm", "exit_price",
+                "pnl_pct", "exit_reason", "holding_minutes",
+            ]
+            available_cols = [c for c in display_cols if c in display.columns]
+            display = display[available_cols].copy()
 
-        # Format expiry
-        if "entry_expiry" in display.columns:
-            display["expiry"] = pd.to_datetime(display["entry_expiry"]).dt.strftime("%m/%d")
+            col_rename = {
+                "entry_hm": "Buy Time",
+                "entry_strike": "Strike",
+                "expiry": "Expiry",
+                "entry_underlying": "Stock Price",
+                "entry_price": "Option Buy$",
+                "exit_hm": "Sell Time",
+                "exit_price": "Option Sell$",
+                "pnl_pct": "PnL%",
+                "exit_reason": "Reason",
+                "holding_minutes": "Hold(min)",
+            }
+            display = display.rename(columns=col_rename)
 
-        display_cols = [
-            "#", "entry_hm", "entry_strike", "expiry",
-            "entry_underlying", "entry_price",
-            "exit_hm", "exit_price",
-            "pnl_pct", "exit_reason", "holding_minutes",
-        ]
-        available_cols = [c for c in display_cols if c in display.columns]
-        display = display[available_cols].copy()
+            if "PnL%" in display.columns:
+                display["PnL%"] = display["PnL%"].map("{:+.2%}".format)
+            for col in ["Stock Price", "Option Buy$", "Option Sell$"]:
+                if col in display.columns:
+                    display[col] = display[col].map("${:.2f}".format)
 
-        col_rename = {
-            "entry_hm": "Buy Time",
-            "entry_strike": "Strike",
-            "expiry": "Expiry",
-            "entry_underlying": "Stock Price",
-            "entry_price": "Option Buy$",
-            "exit_hm": "Sell Time",
-            "exit_price": "Option Sell$",
-            "pnl_pct": "PnL%",
-            "exit_reason": "Reason",
-            "holding_minutes": "Hold(min)",
-        }
-        display = display.rename(columns=col_rename)
+            st.dataframe(display, use_container_width=True, hide_index=True)
 
-        # Format numbers
-        if "PnL%" in display.columns:
-            display["PnL%"] = display["PnL%"].map("{:+.2%}".format)
-        for col in ["Stock Price", "Option Buy$", "Option Sell$"]:
-            if col in display.columns:
-                display[col] = display[col].map("${:.2f}".format)
 
-        st.dataframe(display, use_container_width=True, hide_index=True)
+# Call the fragment
+_daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe, kb_dir)
 
 
 # ── 5. Distribution Analysis ─────────────────────────────
