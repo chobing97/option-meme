@@ -29,6 +29,7 @@ from dashboard.data_loader import (
     find_backtest_defaults,
     get_backtest_symbols,
     has_options_data,
+    load_options_ohlcv_any,
     load_options_ohlcv_by_strike,
     load_prediction_for_backtest,
     load_raw_bars,
@@ -317,6 +318,16 @@ def _daily_chart_fragment(equity_df, trades_df, bt_symbol, threshold, timeframe,
             if not option_ohlcv.empty:
                 option_ohlcv["datetime"] = pd.to_datetime(option_ohlcv["datetime"])
                 contract_info = option_ohlcv.attrs.get("contract_info", f"Put K={trade_strike:.0f}")
+                has_option = True
+                break
+
+    # Fallback: no trades or no OHLCV for traded strikes — show any available option
+    if not has_option:
+        close_price = float(day_eq["underlying_close"].mean()) if not day_eq.empty else 0.0
+        option_ohlcv = load_options_ohlcv_any("us", bt_symbol, str(selected_date), close_price)
+        if not option_ohlcv.empty:
+            option_ohlcv["datetime"] = pd.to_datetime(option_ohlcv["datetime"])
+            contract_info = option_ohlcv.attrs.get("contract_info", "")
             has_option = True
 
     if has_option:

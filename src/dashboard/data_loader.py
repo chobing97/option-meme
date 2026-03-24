@@ -351,6 +351,66 @@ def load_options_ohlcv_by_strike(
     return result
 
 
+@st.cache_data(show_spinner=False)
+def load_options_ohlcv_any(market: str, symbol: str, date_str: str, close_price: float = 0.0, cp: str = "P") -> pd.DataFrame:
+    """Load any available options OHLCV for a given date.
+
+    Finds the contract with OHLCV data closest to close_price (ATM).
+    Used as fallback when no specific strike is requested.
+    """
+    sym_dir = RAW_OPTIONS_DIR / market / symbol
+    if not sym_dir.exists():
+        return pd.DataFrame()
+
+    target_date = pd.Timestamp(date_str)
+    year_file = sym_dir / f"{target_date.year}.parquet"
+    if not year_file.exists():
+        return pd.DataFrame()
+
+    day_start = pd.Timestamp(target_date.date())
+    day_end = day_start + pd.Timedelta(days=1)
+    day_ohlcv = pd.read_parquet(
+        year_file,
+        filters=[("datetime", ">=", day_start), ("datetime", "<", day_end)],
+    )
+    if day_ohlcv.empty:
+        return pd.DataFrame()
+
+    # Pick contract closest to close_price (ATM)
+    available_symbols = day_ohlcv["symbol"].unique()
+    contracts_path = sym_dir / "contracts.parquet"
+    if contracts_path.exists():
+        contracts = pd.read_parquet(contracts_path)
+        candidates = contracts[
+            (contracts["symbol"].isin(available_symbols))
+            & (contracts["cp"] == cp)
+        ].copy()
+        if not candidates.empty and close_price > 0:
+            candidates["strike_diff"] = abs(candidates["strike"] - close_price)
+            best = candidates.loc[candidates["strike_diff"].idxmin()]
+            chosen_symbol = best["symbol"]
+            strike = best["strike"]
+            expiry = pd.to_datetime(best["expiry"]).strftime("%Y-%m-%d")
+        else:
+            chosen_symbol = available_symbols[0]
+            strike = 0
+            expiry = ""
+    else:
+        chosen_symbol = available_symbols[0]
+        strike = 0
+        expiry = ""
+
+    result = day_ohlcv[day_ohlcv["symbol"] == chosen_symbol].copy()
+    result["datetime"] = pd.to_datetime(result["datetime"])
+    result = result.sort_values("datetime").reset_index(drop=True)
+
+    if not result.empty:
+        info = f"Put K={strike:.0f} Exp={expiry}" if strike > 0 else chosen_symbol.strip()
+        result.attrs["contract_info"] = info
+
+    return result
+
+
 # ── Labeled data ──────────────────────────────────────────
 
 
