@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import streamlit as st
 
-from dashboard.components.charts import make_candlestick, make_option_candlestick
+from dashboard.components.charts import make_candlestick, make_option_candlestick, make_stock_option_chart
 from dashboard.components.filters import (
     date_range_selector, kb_nav_apply_date, kb_nav_apply_symbol, kb_nav_read,
     load_from_query_params, market_selector, reload_button, symbol_selector,
@@ -19,7 +19,7 @@ from dashboard.components.filters import (
 )
 from dashboard.data_loader import (
     get_raw_date_range, get_raw_symbols, get_raw_trading_dates, get_stock_name_map,
-    has_options_data, load_options_ohlcv, load_raw_bars,
+    has_options_data, load_options_ohlcv, load_options_ohlcv_any, load_raw_bars,
 )
 
 st.set_page_config(page_title="Raw Data", layout="wide")
@@ -91,27 +91,28 @@ st.subheader(f"Intraday Chart [{timeframe}] — {stock_label} — {selected_date
 next_day = selected_date + timedelta(days=1)
 day_df = load_raw_bars(market, symbol, str(selected_date), str(next_day), timeframe)
 
+option_df = None
 if day_df.empty:
     st.info(f"No data for {selected_date}")
 else:
     chart_title = f"{stock_label} ({market.upper()}) [{timeframe}] — {selected_date} ({day_name})"
 
-    # Stock chart
-    st.plotly_chart(make_candlestick(day_df, chart_title), use_container_width=True)
-
-    # Option chart (separate figure, x-axis aligned by same date)
-    option_df = None
+    # Load option data if available (contracts-based, then fallback to any available)
     if has_options_data(market, symbol):
         option_df = load_options_ohlcv(market, symbol, str(selected_date))
-        if option_df is not None and not option_df.empty:
-            contract_info = option_df.attrs.get("contract_info", "Option")
-            option_title = f"{contract_info} — {selected_date}"
-            st.plotly_chart(
-                make_option_candlestick(option_df, option_title, stock_df=day_df),
-                use_container_width=True,
-            )
-        else:
+        if option_df is not None and option_df.empty:
             option_df = None
+        if option_df is None:
+            close_price = float(day_df["close"].mean()) if not day_df.empty else 0.0
+            option_df = load_options_ohlcv_any(market, symbol, str(selected_date), close_price)
+            if option_df is not None and option_df.empty:
+                option_df = None
+
+    # Combined stock + option chart (single figure, shared x-axis)
+    st.plotly_chart(
+        make_stock_option_chart(day_df, option_df, chart_title),
+        use_container_width=True,
+    )
 
 # ── Data tables (selected day) ───────────────────────────
 

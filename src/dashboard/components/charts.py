@@ -346,6 +346,152 @@ def make_candlestick_with_probs(df: pd.DataFrame, title: str = "Predictions") ->
     return fig
 
 
+def make_stock_option_chart(
+    stock_df: pd.DataFrame,
+    option_df: pd.DataFrame | None,
+    title: str = "OHLCV",
+) -> go.Figure:
+    """Combined stock + option candlestick chart with perfectly aligned x-axes.
+
+    Stock chart on top, option chart below, sharing the same x-axis.
+    If option_df is None or empty, falls back to stock-only chart.
+    """
+    if option_df is None or option_df.empty:
+        return make_candlestick(stock_df, title)
+
+    # Determine volume layout for stock
+    stock_vol = stock_df["volume"]
+    stock_cap, stock_has_outliers = _vol_outlier_cap(stock_df)
+    stock_colors = _vol_colors(stock_df)
+
+    # Option volume
+    opt_vol = option_df["volume"] if "volume" in option_df.columns else None
+    has_opt_vol = opt_vol is not None and opt_vol.sum() > 0
+
+    # Build subplot layout: stock candle + stock vol + option candle + option vol
+    if stock_has_outliers:
+        row_specs = [
+            [{}],  # 1: stock candle
+            [{}],  # 2: stock vol outlier (log)
+            [{}],  # 3: stock vol normal
+            [{}],  # 4: option candle
+        ]
+        row_heights = [0.38, 0.06, 0.12, 0.30]
+        if has_opt_vol:
+            row_specs.append([{}])  # 5: option vol
+            row_heights = [0.34, 0.05, 0.11, 0.30, 0.10]
+    else:
+        row_specs = [
+            [{}],  # 1: stock candle
+            [{}],  # 2: stock vol
+            [{}],  # 3: option candle
+        ]
+        row_heights = [0.40, 0.15, 0.30]
+        if has_opt_vol:
+            row_specs.append([{}])  # 4: option vol
+            row_heights = [0.36, 0.14, 0.30, 0.10]
+
+    n_rows = len(row_specs)
+    fig = make_subplots(
+        rows=n_rows, cols=1, shared_xaxes=True,
+        vertical_spacing=0.02, row_heights=row_heights,
+    )
+
+    # ── Stock candle (row 1) ──
+    fig.add_trace(
+        go.Candlestick(
+            x=stock_df["datetime"],
+            open=stock_df["open"], high=stock_df["high"],
+            low=stock_df["low"], close=stock_df["close"],
+            name="Stock OHLC",
+        ),
+        row=1, col=1,
+    )
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+
+    # ── Stock volume ──
+    if stock_has_outliers:
+        # Row 2: outlier range (log)
+        fig.add_trace(
+            go.Bar(x=stock_df["datetime"], y=stock_vol, marker_color=stock_colors, opacity=0.6, showlegend=False),
+            row=2, col=1,
+        )
+        fig.update_yaxes(
+            type="log", range=[np.log10(stock_cap), np.log10(stock_vol.max() * 1.1)],
+            dtick=1, minor=dict(dtick="D1"), row=2, col=1,
+        )
+        # Row 3: normal range
+        fig.add_trace(
+            go.Bar(x=stock_df["datetime"], y=stock_vol.clip(upper=stock_cap),
+                   marker_color=stock_colors, name="Stock Vol", opacity=0.6),
+            row=3, col=1,
+        )
+        fig.update_yaxes(range=[0, stock_cap * 1.05], title_text="Volume", row=3, col=1)
+        option_candle_row = 4
+    else:
+        fig.add_trace(
+            go.Bar(x=stock_df["datetime"], y=stock_vol, marker_color=stock_colors, name="Stock Vol", opacity=0.6),
+            row=2, col=1,
+        )
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
+        option_candle_row = 3
+
+    # ── Option candle ──
+    fig.add_trace(
+        go.Candlestick(
+            x=option_df["datetime"],
+            open=option_df["open"], high=option_df["high"],
+            low=option_df["low"], close=option_df["close"],
+            name="Option OHLC",
+            increasing_line_color="#5d8a80", decreasing_line_color="#8a5d5d",
+        ),
+        row=option_candle_row, col=1,
+    )
+    contract_info = option_df.attrs.get("contract_info", "Option $")
+    fig.update_yaxes(title_text=contract_info, row=option_candle_row, col=1)
+
+    # ── Option volume ──
+    if has_opt_vol:
+        opt_vol_row = option_candle_row + 1
+        opt_colors = _vol_colors(option_df)
+        fig.add_trace(
+            go.Bar(x=option_df["datetime"], y=opt_vol, marker_color=opt_colors, name="Opt Vol", opacity=0.6),
+            row=opt_vol_row, col=1,
+        )
+        fig.update_yaxes(title_text="Opt Vol", row=opt_vol_row, col=1)
+
+    # ── Layout ──
+    fig.update_layout(
+        title=title,
+        xaxis_rangeslider_visible=False,
+        height=800,
+        margin=dict(l=40, r=20, t=40, b=20),
+        showlegend=False,
+    )
+    # Disable rangeslider on all x-axes
+    for i in range(1, n_rows + 1):
+        axis_key = f"xaxis{i}" if i > 1 else "xaxis"
+        fig.update_layout(**{f"{axis_key}_rangeslider_visible": False})
+
+    # Apply rangebreaks and fixed x-axis range
+    breaks = _trading_rangebreaks(stock_df)
+    fig.update_xaxes(rangebreaks=breaks)
+
+    if "datetime" in stock_df.columns and not stock_df.empty:
+        trade_date = pd.Timestamp(stock_df["datetime"].iloc[0]).normalize()
+        first_time = stock_df["datetime"].min()
+        start_hour = pd.Timestamp(first_time).hour
+        if start_hour < 9 or (start_hour == 9 and pd.Timestamp(first_time).minute < 15):
+            market_open = trade_date + pd.Timedelta(hours=9)
+            market_close = trade_date + pd.Timedelta(hours=15, minutes=30)
+        else:
+            market_open = trade_date + pd.Timedelta(hours=9, minutes=30)
+            market_close = trade_date + pd.Timedelta(hours=16)
+        fig.update_xaxes(range=[market_open, market_close])
+
+    return fig
+
+
 def make_option_candlestick(
     option_df: pd.DataFrame, title: str = "Option OHLCV",
     stock_df: pd.DataFrame | None = None,

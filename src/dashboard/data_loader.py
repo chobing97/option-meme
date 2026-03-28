@@ -253,12 +253,11 @@ def load_options_ohlcv(market: str, symbol: str, date_str: str) -> pd.DataFrame:
     if active.empty:
         return pd.DataFrame()
 
-    # Pick ATM put (closest strike to stock_close)
+    # Pick ATM put (closest strike to stock_close), try each until OHLCV found
     puts = active[active["cp"] == "P"]
     if puts.empty:
         puts = active  # fallback to any type
-    atm = puts.iloc[(puts["strike"] - puts["stock_close"]).abs().argsort()[:1]]
-    contract_symbol = atm["symbol"].iloc[0].strip()
+    sorted_puts = puts.iloc[(puts["strike"] - puts["stock_close"]).abs().argsort()]
 
     # Load only the relevant year's OHLCV file with row-level filter
     year_file = sym_dir / f"{target_date.year}.parquet"
@@ -267,26 +266,25 @@ def load_options_ohlcv(market: str, symbol: str, date_str: str) -> pd.DataFrame:
 
     day_start = pd.Timestamp(target_date.date())
     day_end = day_start + pd.Timedelta(days=1)
-    ohlcv = pd.read_parquet(
-        year_file,
-        filters=[
-            ("symbol", "==", atm["symbol"].iloc[0]),  # exact match (padded)
-            ("datetime", ">=", day_start),
-            ("datetime", "<", day_end),
-        ],
-    )
-    if ohlcv.empty:
-        return pd.DataFrame()
 
-    ohlcv["datetime"] = pd.to_datetime(ohlcv["datetime"])
-    result = ohlcv.sort_values("datetime").reset_index(drop=True)
+    for _, candidate in sorted_puts.iterrows():
+        ohlcv = pd.read_parquet(
+            year_file,
+            filters=[
+                ("symbol", "==", candidate["symbol"]),
+                ("datetime", ">=", day_start),
+                ("datetime", "<", day_end),
+            ],
+        )
+        if not ohlcv.empty:
+            ohlcv["datetime"] = pd.to_datetime(ohlcv["datetime"])
+            result = ohlcv.sort_values("datetime").reset_index(drop=True)
+            strike = float(candidate["strike"])
+            expiry = pd.to_datetime(candidate["expiry"]).strftime("%Y-%m-%d")
+            result.attrs["contract_info"] = f"Put K={strike:.0f} Exp={expiry}"
+            return result
 
-    if not result.empty:
-        strike = float(atm["strike"].iloc[0])
-        expiry = atm["expiry"].iloc[0].strftime("%Y-%m-%d")
-        result.attrs["contract_info"] = f"Put K={strike:.0f} Exp={expiry}"
-
-    return result
+    return pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False)
